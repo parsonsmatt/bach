@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  stack:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - ghc: '9.6'
+            resolver: 'lts-22.43'
+          - ghc: '9.8'
+            resolver: 'lts-23.14'
+          - ghc: '9.10'
+            resolver: 'lts-24.34'
+          - ghc: '9.12'
+            resolver: 'nightly-2026-03-20'
+      fail-fast: false
+    name: Stack GHC ${{ matrix.ghc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-version: 'latest'
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            .stack-work
+          key: stack-${{ matrix.resolver }}-${{ hashFiles('package.yaml') }}
+          restore-keys: stack-${{ matrix.resolver }}-
+
+      - name: Build
+        run: stack build --resolver ${{ matrix.resolver }} --test --no-run-tests
+
+      - name: Test
+        run: stack test --resolver ${{ matrix.resolver }}
+
+  cabal:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ghc: ['9.6', '9.8', '9.10', '9.12']
+      fail-fast: false
+    name: Cabal GHC ${{ matrix.ghc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: 'latest'
+
+      - name: Update package list
+        run: cabal update
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: cabal-${{ matrix.ghc }}-${{ hashFiles('bach.cabal') }}
+          restore-keys: cabal-${{ matrix.ghc }}-
+
+      - name: Build dependencies
+        run: cabal build --only-dependencies --enable-tests
+
+      - name: Build
+        run: cabal build --enable-tests
+
+      - name: Test
+        run: cabal test
