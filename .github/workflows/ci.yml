@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - ghc: '9.6'
+            resolver: 'lts-22.43'
+          - ghc: '9.8'
+            resolver: 'lts-23.14'
+          - ghc: '9.10'
+            resolver: 'lts-24.34'
+      fail-fast: false
+    name: GHC ${{ matrix.ghc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-version: 'latest'
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+          key: stack-${{ matrix.resolver }}-${{ hashFiles('package.yaml') }}
+          restore-keys: stack-${{ matrix.resolver }}-
+
+      - name: Build
+        run: stack build --resolver ${{ matrix.resolver }} --test --no-run-tests
+
+      - name: Test
+        run: stack test --resolver ${{ matrix.resolver }}
