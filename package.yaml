@@ -1,0 +1,75 @@
+name:                bach
+version:             0.1.0.0
+github:              "githubuser/bach"
+license:             BSD-3-Clause
+author:              "Author name here"
+maintainer:          "example@example.com"
+copyright:           "2026 Author name here"
+
+extra-source-files:
+- README.md
+- CHANGELOG.md
+
+description:         PR batch merge tool — find conflict-free sets of pull requests
+
+dependencies:
+- base >= 4.7 && < 5
+- rio
+- aeson
+- optparse-applicative
+- typed-process
+- text
+
+default-extensions:
+- BlockArguments
+- DeriveGeneric
+- DerivingStrategies
+- FlexibleContexts
+- FlexibleInstances
+- GeneralizedNewtypeDeriving
+- LambdaCase
+- MultiParamTypeClasses
+- NoImplicitPrelude
+- OverloadedRecordDot
+- OverloadedStrings
+- ScopedTypeVariables
+- TypeApplications
+
+ghc-options:
+- -Wall
+- -Wcompat
+- -Widentities
+- -Wincomplete-record-updates
+- -Wincomplete-uni-patterns
+- -Wmissing-export-lists
+- -Wmissing-home-modules
+- -Wpartial-fields
+- -Wredundant-constraints
+
+library:
+  source-dirs: src
+
+executables:
+  bach:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - bach
+
+tests:
+  bach-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - bach
+    - hspec
+    - hspec-discover
+    - temporary
