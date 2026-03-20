@@ -17,6 +17,8 @@ jobs:
             resolver: 'lts-23.14'
           - ghc: '9.10'
             resolver: 'lts-24.34'
+          - ghc: '9.12'
+            resolver: 'nightly-2026-03-20'
       fail-fast: false
     name: GHC ${{ matrix.ghc }}
     steps:
