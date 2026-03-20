@@ -71,5 +71,6 @@ tests:
     dependencies:
     - bach
     - hspec
-    - hspec-discover
     - temporary
+    build-tools:
+    - hspec-discover
