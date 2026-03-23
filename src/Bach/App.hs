@@ -75,8 +75,8 @@ fugueOptionsParser :: Parser FugueOptions
 fugueOptionsParser =
     FugueOptions
         <$> switch
-            ( long "dry-run"
-                <> help "Analyze and report without modifying PR status"
+            ( long "apply"
+                <> help "Mark ready PRs as ready and deferred PRs as draft on GitHub"
             )
         <*> optional
             ( T.pack
@@ -152,8 +152,8 @@ runFugueCommand fugueOpts =
             JSON -> outputJson results
             GhActions -> outputGhActions results
 
-        -- Apply unless dry-run
-        unless (fugueDryRun fugueOpts) $ do
+        -- Apply only if --apply
+        when (fugueApply fugueOpts) $ do
             logInfo "Applying results..."
             applyResults results
 

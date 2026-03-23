@@ -142,7 +142,7 @@ data BachException
 instance Exception BachException
 
 data FugueOptions = FugueOptions
-    { fugueDryRun :: !Bool
+    { fugueApply :: !Bool
     , fugueBase :: !(Maybe Text)
     , fugueNoFetch :: !Bool
     , fugueOutput :: !OutputFormat
