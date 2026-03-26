@@ -69,42 +69,40 @@ spec = do
             createBranch dir "ind-a" [("file-a.txt", "aaa\n")]
             createBranch dir "ind-b" [("file-b.txt", "bbb\n")]
             let
-                prs = [mkPR 1 "ind-a", mkPR 2 "ind-b"]
+                prs = mkPR 1 "ind-a" :| [mkPR 2 "ind-b"]
             conflicts <- runRIO lf $ findConflicts dir "main" prs
-            conflicts `shouldBe` []
+            conflicts `shouldBe` Nothing
 
         it "detects a pairwise conflict" $ withTestRepo \dir -> withLog \lf -> do
             createBranch dir "cx" [("file.txt", "XXX\nline2\nline3\nline4\nline5\n")]
             createBranch dir "cy" [("file.txt", "YYY\nline2\nline3\nline4\nline5\n")]
             let
-                prs = [mkPR 1 "cx", mkPR 2 "cy"]
+                prs = mkPR 1 "cx" :| [mkPR 2 "cy"]
             conflicts <- runRIO lf $ findConflicts dir "main" prs
-            length conflicts `shouldBe` 1
             case conflicts of
-                [cp] -> do
+                Just (cp :| []) -> do
                     cp.cpLeft `shouldBe` 1
                     cp.cpRight `shouldBe` 2
-                _ -> expectationFailure $ "Expected 1 conflict, got " <> show (length conflicts)
+                _ -> expectationFailure $ "Expected Just (1 conflict), got " <> show conflicts
 
         it "detects multiple conflicts in a triangle" $ withTestRepo \dir -> withLog \lf -> do
             createBranch dir "ta" [("file.txt", "AAA\nline2\nline3\nline4\nline5\n")]
             createBranch dir "tb" [("file.txt", "BBB\nline2\nline3\nline4\nline5\n")]
             createBranch dir "tc" [("file.txt", "CCC\nline2\nline3\nline4\nline5\n")]
             let
-                prs = [mkPR 1 "ta", mkPR 2 "tb", mkPR 3 "tc"]
+                prs = mkPR 1 "ta" :| [mkPR 2 "tb", mkPR 3 "tc"]
             conflicts <- runRIO lf $ findConflicts dir "main" prs
-            length conflicts `shouldBe` 3
+            fmap length conflicts `shouldBe` Just 3
 
         it "only flags the conflicting pairs, not clean ones" $ withTestRepo \dir -> withLog \lf -> do
             createBranch dir "pa" [("file.txt", "AAA\nline2\nline3\nline4\nline5\n")]
             createBranch dir "pb" [("file.txt", "BBB\nline2\nline3\nline4\nline5\n")]
             createBranch dir "pc" [("other.txt", "new content\n")]
             let
-                prs = [mkPR 1 "pa", mkPR 2 "pb", mkPR 3 "pc"]
+                prs = mkPR 1 "pa" :| [mkPR 2 "pb", mkPR 3 "pc"]
             conflicts <- runRIO lf $ findConflicts dir "main" prs
-            length conflicts `shouldBe` 1
             case conflicts of
-                [cp] -> do
+                Just (cp :| []) -> do
                     cp.cpLeft `shouldBe` 1
                     cp.cpRight `shouldBe` 2
-                _ -> expectationFailure $ "Expected 1 conflict, got " <> show (length conflicts)
+                _ -> expectationFailure $ "Expected Just (1 conflict), got " <> show conflicts

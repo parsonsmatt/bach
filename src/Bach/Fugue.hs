@@ -148,15 +148,15 @@ runBatching
     -> RIO env FugueResults
 runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs = do
     -- Phase 1b: Pairwise conflict detection
-    let
-        validList = toList validPRs
     logInfo
         $ "Testing "
         <> displayShow (length validPRs)
         <> " PRs for pairwise conflicts ("
         <> displayShow (nPairs (length validPRs))
         <> " pairs)..."
-    conflictPairs <- findConflicts dir base validList
+    mConflictPairs <- findConflicts dir base validPRs
+    let
+        conflictPairs = maybe [] toList mConflictPairs
 
     -- Check must-include PRs don't conflict with each other
     let

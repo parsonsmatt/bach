@@ -8,6 +8,7 @@ import Bach.Git (gitCommitTree, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
 import Data.List (tails, uncons)
+import Data.List.NonEmpty (nonEmpty)
 import Data.These (These (..))
 
 -- | Partition PRs into (conflicts with base, clean). Since the input is
@@ -33,13 +34,17 @@ partitionBase dir base prs = do
 -- the working directory.
 findConflicts
     :: (HasLogFunc env)
-    => FilePath -> Text -> [PullRequest] -> RIO env [ConflictPair]
+    => FilePath
+    -> Text
+    -> NonEmpty PullRequest
+    -> RIO env (Maybe (NonEmpty ConflictPair))
 findConflicts dir base prs = do
     let
-        groups = mapMaybe uncons (tails prs)
-        total = nPairs (length prs)
+        prList = toList prs
+        groups = mapMaybe uncons (tails prList)
+        total = nPairs (length prList)
     indexRef <- newIORef (0 :: Int)
-    fmap (catMaybes . concat)
+    fmap (nonEmpty . catMaybes . concat)
         $ forM groups
         $ \(leftPR, rightPRs) -> do
             mergeResult <-
