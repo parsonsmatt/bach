@@ -9,6 +9,7 @@ import Bach.Forge (HasForgeHandle (..), fetchPR)
 import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
+import Data.List (find)
 import qualified Data.Text as T
 import RIO.Directory (getCurrentDirectory)
 import qualified RIO.Set as Set
@@ -40,7 +41,10 @@ runFugue opts = do
         pure pr
 
     -- Resolve must-include PRs
-    mustIncludeSet <- resolveMustInclude prs (fugueMustInclude opts)
+    mustIncludeSet <-
+        either throwIO pure $ resolveMustInclude prs (fugueMustInclude opts)
+    let
+        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
     unless (Set.null mustIncludeSet)
         $ logInfo
         $ "Must-include: "
@@ -61,15 +65,12 @@ runFugue opts = do
 
     -- Check must-include PRs aren't base-conflicting
     let
-        mustIncludeBaseConflicts =
-            filter (\pr -> Set.member pr.prNumber mustIncludeSet) baseConflicts
+        mustIncludeBaseConflicts = filter isMustInclude baseConflicts
     unless (null mustIncludeBaseConflicts)
         $ throwIO
         $ MustIncludeError
         $ "Must-include PR(s) conflict with base: "
-        <> T.intercalate
-            ", "
-            (map (\pr -> "#" <> tshow pr.prNumber) mustIncludeBaseConflicts)
+        <> formatPRNums mustIncludeBaseConflicts
 
     -- Phase 1b: Pairwise conflict detection
     logInfo
@@ -120,24 +121,19 @@ runFugue opts = do
     -- Must-include PRs go first so they're never evicted by others
     logInfo "Validating batch..."
     let
-        mustFirst =
-            filter (\pr -> Set.member pr.prNumber mustIncludeSet) candidateBatch
-        others =
-            filter (\pr -> Set.notMember pr.prNumber mustIncludeSet) candidateBatch
+        mustFirst = filter isMustInclude candidateBatch
+        others = filter (not . isMustInclude) candidateBatch
         orderedBatch = mustFirst <> others
     (ready, evicted) <- validateBatch dir base orderedBatch
 
     -- Check must-include PRs weren't evicted (higher-order conflict among them)
     let
-        mustIncludeEvicted =
-            filter (\pr -> Set.member pr.prNumber mustIncludeSet) evicted
+        mustIncludeEvicted = filter isMustInclude evicted
     unless (null mustIncludeEvicted)
         $ throwIO
         $ MustIncludeError
         $ "Must-include PR(s) have higher-order conflicts: "
-        <> T.intercalate
-            ", "
-            (map (\pr -> "#" <> tshow pr.prNumber) mustIncludeEvicted)
+        <> formatPRNums mustIncludeEvicted
 
     unless (null evicted)
         $ logWarn
@@ -158,34 +154,33 @@ runFugue opts = do
 
 -- | Resolve must-include identifiers against the fetched PR list.
 resolveMustInclude
-    :: (MonadIO m) => [PullRequest] -> [PRIdentifier] -> m (Set.Set Int)
-resolveMustInclude _ [] = pure Set.empty
+    :: [PullRequest] -> [PRIdentifier] -> Either BachException (Set.Set Int)
+resolveMustInclude _ [] = Right Set.empty
 resolveMustInclude prs ids = Set.fromList <$> mapM resolve ids
   where
-    resolve (PRById n) =
-        case filter (\pr -> pr.prNumber == n) prs of
-            (_ : _) -> pure n
-            [] ->
-                throwIO
+    resolve (PRById prNum) =
+        case find (\pr -> pr.prNumber == prNum) prs of
+            Just _ -> Right prNum
+            Nothing ->
+                Left
                     $ MustIncludeError
                     $ "Must-include PR #"
-                    <> tshow n
+                    <> tshow prNum
                     <> " not found in targets"
-    resolve (PRByBranch b) =
-        case filter (\pr -> pr.prHeadRef == b) prs of
-            [pr] -> pure pr.prNumber
-            [] ->
-                throwIO
+    resolve (PRByBranch branch) =
+        case find (\pr -> pr.prHeadRef == branch) prs of
+            Just pr -> Right pr.prNumber
+            Nothing ->
+                Left
                     $ MustIncludeError
                     $ "Must-include branch '"
-                    <> b
+                    <> branch
                     <> "' not found in targets"
-            _ ->
-                throwIO
-                    $ MustIncludeError
-                    $ "Multiple PRs match must-include branch '"
-                    <> b
-                    <> "'"
+
+-- | Format a list of PRs as "#1, #2, #3".
+formatPRNums :: [PullRequest] -> Text
+formatPRNums =
+    T.intercalate ", " . map (\pr -> "#" <> tshow pr.prNumber)
 
 -- | Validate a batch by sequentially merging each PR into an accumulated
 -- tree via merge-tree. Returns (clean PRs, evicted PRs).
