@@ -1,7 +1,6 @@
 module Bach.Fugue
     ( runFugue
     , validateBatch
-    , MustIncludeNotFound (..)
     , MustIncludeBaseConflict (..)
     , MustIncludePairwiseConflict (..)
     , MustIncludeHigherOrderConflict (..)
@@ -13,21 +12,12 @@ import Bach.Forge (HasForgeHandle (..), fetchPR)
 import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
-import Data.List (find, intercalate)
+import Data.List (intercalate)
 import Data.List.NonEmpty (nonEmpty)
-import qualified Data.Text as T
 import Data.These (These (..))
 import RIO.Directory (getCurrentDirectory)
+import qualified RIO.Map as Map
 import qualified RIO.Set as Set
-
-data MustIncludeNotFound = MustIncludeNotFound !PRIdentifier
-    deriving stock (Show, Eq)
-
-instance Exception MustIncludeNotFound where
-    displayException (MustIncludeNotFound prid) =
-        "Must-include PR not found in targets: " <> case prid of
-            PRById n -> "#" <> show n
-            PRByBranch b -> T.unpack b
 
 data MustIncludeBaseConflict = MustIncludeBaseConflict !(NonEmpty PullRequest)
     deriving stock (Show, Eq)
@@ -81,17 +71,19 @@ runFugue opts = do
         <> display (repoName ctx)
     logInfo $ "Base branch: " <> display base
 
-    -- Fetch PR metadata from forge
-    prs <- forM (fugueTargets opts) $ \prid -> do
-        pr <- fetchPR prid
-        logInfo $ "  #" <> display pr.prNumber <> " " <> display pr.prTitle
-        pure pr
+    -- Fetch all PR metadata, deduplicating by PR number
+    logInfo "Fetching PR metadata..."
+    prMap <- foldM fetchInto Map.empty (toList (fugueTargets opts))
+    (prMap', mustIncludeSet) <-
+        foldM fetchMustIncludeInto (prMap, Set.empty) (fugueMustInclude opts)
 
-    -- Resolve must-include PRs
-    mustIncludeSet <-
-        either throwIO pure $ resolveMustInclude prs (fugueMustInclude opts)
+    -- targets are NonEmpty, so prMap' is non-empty
     let
+        prs = case nonEmpty (Map.elems prMap') of
+            Just ne -> ne
+            Nothing -> error "runFugue: impossible — targets is NonEmpty"
         isMustInclude pr = Set.member pr.prNumber mustIncludeSet
+
     unless (Set.null mustIncludeSet)
         $ logInfo
         $ "Must-include: "
@@ -100,7 +92,7 @@ runFugue opts = do
     -- Fetch git refs
     unless (fugueNoFetch opts) $ do
         logInfo "Fetching refs..."
-        gitFetch dir (base : toList (fmap (.prHeadRef) prs))
+        gitFetch dir (base : map (.prHeadRef) (toList prs))
 
     -- Phase 1a: Partition by base conflicts
     logInfo "Checking for base conflicts..."
@@ -217,24 +209,43 @@ runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs = do
             , frDeferred = deferred <> evicted
             }
 
--- | Resolve must-include identifiers against the fetched PR list.
-resolveMustInclude
-    :: (Foldable f)
-    => f PullRequest
-    -> [PRIdentifier]
-    -> Either MustIncludeNotFound (Set.Set Int)
-resolveMustInclude _ [] = Right Set.empty
-resolveMustInclude prs ids = Set.fromList <$> mapM resolve ids
-  where
-    prList = toList prs
-    resolve (PRById prNum) =
-        case find (\pr -> pr.prNumber == prNum) prList of
-            Just _ -> Right prNum
-            Nothing -> Left $ MustIncludeNotFound (PRById prNum)
-    resolve (PRByBranch branch) =
-        case find (\pr -> pr.prHeadRef == branch) prList of
-            Just pr -> Right pr.prNumber
-            Nothing -> Left $ MustIncludeNotFound (PRByBranch branch)
+-- | Fetch a PR and insert into the map, skipping duplicates.
+fetchInto
+    :: (HasForgeHandle env, HasLogFunc env)
+    => Map.Map Int PullRequest
+    -> PRIdentifier
+    -> RIO env (Map.Map Int PullRequest)
+fetchInto prMap prid = do
+    pr <- fetchPR prid
+    unless (Map.member pr.prNumber prMap)
+        $ logInfo
+        $ "  #"
+        <> display pr.prNumber
+        <> " "
+        <> display pr.prTitle
+    pure $ Map.insertWith (\_ old -> old) pr.prNumber pr prMap
+
+-- | Fetch a must-include PR, insert into map, and track its number.
+fetchMustIncludeInto
+    :: (HasForgeHandle env, HasLogFunc env)
+    => (Map.Map Int PullRequest, Set.Set Int)
+    -> PRIdentifier
+    -> RIO env (Map.Map Int PullRequest, Set.Set Int)
+fetchMustIncludeInto (prMap, mustSet) prid = do
+    pr <- fetchPR prid
+    let
+        isNew = not $ Map.member pr.prNumber prMap
+    when isNew
+        $ logInfo
+        $ "  #"
+        <> display pr.prNumber
+        <> " "
+        <> display pr.prTitle
+        <> " (must-include)"
+    pure
+        ( Map.insertWith (\_ old -> old) pr.prNumber pr prMap
+        , Set.insert pr.prNumber mustSet
+        )
 
 -- | Validate a batch by sequentially merging each PR into an accumulated
 -- tree via merge-tree. Returns (clean PRs, evicted PRs).
