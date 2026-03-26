@@ -1,7 +1,8 @@
 module Bach.BatchingSpec (spec) where
 
-import Bach.Batching (buildBatches)
+import Bach.Batching (NoBatchEligible (..), buildBatches, selectBatch)
 import Bach.Conflicts (nPairs)
+import qualified Bach.NonEmptyMap as NEM
 import Bach.Prelude
 import qualified RIO.Map as Map
 import qualified RIO.Set as Set
@@ -24,16 +25,20 @@ spec = do
             prC = mkPR 3 "c"
             prD = mkPR 4 "d"
 
+            -- Convert to Map of regular lists for easy assertions
+            batchMap prs conflicts =
+                Map.map toList . NEM.toMap $ buildBatches prs conflicts
+
         it "puts all PRs in batch 1 with no conflicts" do
             let
-                batches = buildBatches [prA, prB, prC] Set.empty
+                batches = batchMap (prA :| [prB, prC]) Set.empty
             Map.size batches `shouldBe` 1
             Map.lookup 1 batches `shouldBe` Just [prA, prB, prC]
 
         it "separates a conflicting pair into 2 batches" do
             let
                 conflicts = Set.singleton (1, 2)
-                batches = buildBatches [prA, prB] conflicts
+                batches = batchMap (prA :| [prB]) conflicts
             Map.size batches `shouldBe` 2
             Map.lookup 1 batches `shouldBe` Just [prA]
             Map.lookup 2 batches `shouldBe` Just [prB]
@@ -41,13 +46,13 @@ spec = do
         it "handles a triangle (all three pairwise conflict)" do
             let
                 conflicts = Set.fromList [(1, 2), (1, 3), (2, 3)]
-                batches = buildBatches [prA, prB, prC] conflicts
+                batches = batchMap (prA :| [prB, prC]) conflicts
             Map.size batches `shouldBe` 3
 
         it "handles a chain: A-B conflict, B-C conflict, A-C clean" do
             let
                 conflicts = Set.fromList [(1, 2), (2, 3)]
-                batches = buildBatches [prA, prB, prC] conflicts
+                batches = batchMap (prA :| [prB, prC]) conflicts
             Map.size batches `shouldBe` 2
             Map.lookup 1 batches `shouldBe` Just [prA, prC]
             Map.lookup 2 batches `shouldBe` Just [prB]
@@ -55,12 +60,54 @@ spec = do
         it "handles two independent conflict pairs" do
             let
                 conflicts = Set.fromList [(1, 2), (3, 4)]
-                batches = buildBatches [prA, prB, prC, prD] conflicts
+                batches = batchMap (prA :| [prB, prC, prD]) conflicts
             Map.size batches `shouldBe` 2
             Map.lookup 1 batches `shouldBe` Just [prA, prC]
             Map.lookup 2 batches `shouldBe` Just [prB, prD]
 
-        it "returns empty for empty input" do
+    describe "selectBatch" do
+        let
+            prA = mkPR 1 "a"
+            prB = mkPR 2 "b"
+            prC = mkPR 3 "c"
+            prD = mkPR 4 "d"
+            prE = mkPR 5 "e"
+            prF = mkPR 6 "f"
+            prG = mkPR 7 "g"
+
+            batches prs conflicts = buildBatches prs conflicts
+
+            -- Convert NonEmpty result to list for shouldBe
+            selectList must b =
+                fmap (\(sel, def) -> (toList sel, def))
+                    $ selectBatch must b
+
+        it "picks the largest batch with no must-include" do
+            -- A conflicts with D,E,F,G. Batch 1 = [A,B,C], batch 2 = [D,E,F,G]
+            -- Largest is batch 2 (4 PRs > 3 PRs)
             let
-                batches = buildBatches [] Set.empty
-            Map.size batches `shouldBe` 0
+                conflicts = Set.fromList [(1, 4), (1, 5), (1, 6), (1, 7)]
+                b = batches (prA :| [prB, prC, prD, prE, prF, prG]) conflicts
+            selectList Set.empty b
+                `shouldBe` Right ([prD, prE, prF, prG], [prA, prB, prC])
+
+        it "picks the largest batch containing must-include PR" do
+            let
+                conflicts = Set.fromList [(1, 4), (1, 5), (1, 6), (1, 7)]
+                b = batches (prA :| [prB, prC, prD, prE, prF, prG]) conflicts
+            selectList (Set.singleton 1) b
+                `shouldBe` Right ([prA, prB, prC], [prD, prE, prF, prG])
+
+        it "picks batch 1 when it is the largest" do
+            let
+                conflicts = Set.singleton (1, 2)
+                b = batches (prA :| [prB, prC, prD]) conflicts
+            fmap (toList . fst) (selectBatch Set.empty b)
+                `shouldBe` Right [prA, prC, prD]
+
+        it "errors when must-include PRs are in different batches" do
+            let
+                conflicts = Set.singleton (1, 2)
+                b = batches (prA :| [prB]) conflicts
+            selectBatch (Set.fromList [1, 2]) b
+                `shouldBe` Left (NoBatchEligible (Set.fromList [1, 2]))

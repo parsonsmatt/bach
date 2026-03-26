@@ -6,13 +6,20 @@ module Bach.Conflicts
 
 import Bach.Git (gitCommitTree, gitMergeTree)
 import Bach.Prelude
+import Bach.These (partitionNE)
 import Bach.Types
 import Data.List (tails, uncons)
+import Data.List.NonEmpty (nonEmpty)
+import Data.These (These)
 
--- | Partition PRs into (conflicts with base, clean).
+-- | Partition PRs into (conflicts with base, clean). Since the input is
+-- non-empty, at least one side of the result is guaranteed non-empty.
 partitionBase
     :: (HasLogFunc env)
-    => FilePath -> Text -> [PullRequest] -> RIO env ([PullRequest], [PullRequest])
+    => FilePath
+    -> Text
+    -> NonEmpty PullRequest
+    -> RIO env (These (NonEmpty PullRequest) (NonEmpty PullRequest))
 partitionBase dir base prs = do
     results <- forM prs $ \pr -> do
         result <- gitMergeTree dir ("origin/" <> base) ("origin/" <> pr.prHeadRef)
@@ -21,20 +28,24 @@ partitionBase dir base prs = do
                 logWarn $ "  #" <> display pr.prNumber <> " conflicts with base"
                 pure $ Left pr
             MergeOk _ -> pure $ Right pr
-    pure $ partitionEithers results
+    pure $ partitionNE results
 
 -- | For each pair of PRs, test if they conflict when both merged into the base.
 -- Uses @git merge-tree@ (in-memory) and temporary commits to avoid touching
 -- the working directory.
 findConflicts
     :: (HasLogFunc env)
-    => FilePath -> Text -> [PullRequest] -> RIO env [ConflictPair]
+    => FilePath
+    -> Text
+    -> NonEmpty PullRequest
+    -> RIO env (Maybe (NonEmpty ConflictPair))
 findConflicts dir base prs = do
     let
-        groups = mapMaybe uncons (tails prs)
-        total = nPairs (length prs)
+        prList = toList prs
+        groups = mapMaybe uncons (tails prList)
+        total = nPairs (length prList)
     indexRef <- newIORef (0 :: Int)
-    fmap (catMaybes . concat)
+    fmap (nonEmpty . catMaybes . concat)
         $ forM groups
         $ \(leftPR, rightPRs) -> do
             mergeResult <-

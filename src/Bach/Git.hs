@@ -4,15 +4,32 @@ module Bach.Git
     , gitMergeTree
     , gitCommitTree
     , parseConflictFiles
+    , GitCommandFailed (..)
+    , RemoteUrlUnparseable (..)
     ) where
 
 import Bach.Prelude
 import Bach.Types
-import Data.List (splitAt)
+import Data.List.Split (chunksOf)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified RIO.ByteString.Lazy as LBS
+import Safe (lastDef)
 import System.Process.Typed (proc, readProcess, setWorkingDir)
+
+data GitCommandFailed = GitCommandFailed ![String]
+    deriving stock (Show, Eq)
+
+instance Exception GitCommandFailed where
+    displayException (GitCommandFailed args) =
+        mconcat ["git ", unwords args, " failed"]
+
+data RemoteUrlUnparseable = RemoteUrlUnparseable !Text
+    deriving stock (Show, Eq)
+
+instance Exception RemoteUrlUnparseable where
+    displayException (RemoteUrlUnparseable url) =
+        "Cannot parse remote URL: " <> T.unpack url
 
 -- | Run a git command in the given working directory.
 runGit :: (MonadIO m) => FilePath -> [String] -> m (ExitCode, Text, Text)
@@ -33,7 +50,7 @@ runGit_ dir args = do
     case exitCode of
         ExitSuccess -> pure out
         ExitFailure _ ->
-            throwIO . GitError $ "git " <> T.pack (unwords args) <> " failed"
+            throwIO $ GitCommandFailed args
 
 -- | Detect repository context from the current git working directory.
 detectRepoContext :: (MonadIO m) => FilePath -> m RepoContext
@@ -62,7 +79,7 @@ parseRemoteUrl url = do
                 reverse . take 2 . reverse $ T.splitOn "/" stripped
     case parts of
         [owner, repo] -> pure (owner, repo)
-        _ -> throwIO . RepoDetectionError $ "Cannot parse remote URL: " <> url
+        _ -> throwIO $ RemoteUrlUnparseable url
 
 -- | Detect the default branch from origin/HEAD.
 detectDefaultBranch :: (MonadIO m) => FilePath -> m Text
@@ -73,11 +90,6 @@ detectDefaultBranch dir = do
             pure . lastDef "main" . T.splitOn "/" $ out
         ExitFailure _ ->
             pure "main"
-
-lastDef :: a -> [a] -> a
-lastDef def [] = def
-lastDef _ [x] = x
-lastDef def (_ : xs) = lastDef def xs
 
 -- | Fetch specific refspecs from origin, in chunks of 20.
 gitFetch
@@ -136,11 +148,3 @@ parseConflictFiles output = mapMaybe extractFile (T.lines output)
         (_, rest)
             | not (T.null rest) -> Just $ T.strip $ T.drop (T.length marker) rest
         _ -> Nothing
-
-chunksOf :: Int -> [a] -> [[a]]
-chunksOf _ [] = []
-chunksOf size xs =
-    let
-        (hd, tl) = splitAt size xs
-     in
-        hd : chunksOf size tl

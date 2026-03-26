@@ -5,7 +5,6 @@ module Bach.Types
     , MergeResult (..)
     , ConflictPair (..)
     , FugueResults (..)
-    , BachException (..)
     , FugueOptions (..)
     , OutputFormat (..)
     , parsePRIdentifier
@@ -13,6 +12,7 @@ module Bach.Types
 
 import Bach.Prelude
 import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
+import Data.List.NonEmpty (nonEmpty)
 import qualified Data.Text as T
 
 data PRIdentifier
@@ -102,8 +102,8 @@ instance FromJSON ConflictPair where
             .: "files"
 
 data FugueResults = FugueResults
-    { frBaseConflicts :: ![PullRequest]
-    , frConflictPairs :: ![ConflictPair]
+    { frBaseConflicts :: !(Maybe (NonEmpty PullRequest))
+    , frConflictPairs :: !(Maybe (NonEmpty ConflictPair))
     , frReady :: ![PullRequest]
     , frDeferred :: ![PullRequest]
     }
@@ -112,8 +112,8 @@ data FugueResults = FugueResults
 instance ToJSON FugueResults where
     toJSON r =
         object
-            [ "baseConflicts" .= r.frBaseConflicts
-            , "conflictPairs" .= r.frConflictPairs
+            [ "baseConflicts" .= maybe [] toList r.frBaseConflicts
+            , "conflictPairs" .= maybe [] toList r.frConflictPairs
             , "ready" .= r.frReady
             , "deferred" .= r.frDeferred
             ]
@@ -121,10 +121,8 @@ instance ToJSON FugueResults where
 instance FromJSON FugueResults where
     parseJSON = withObject "FugueResults" $ \o ->
         FugueResults
-            <$> o
-            .: "baseConflicts"
-            <*> o
-            .: "conflictPairs"
+            <$> (nonEmpty <$> o .: "baseConflicts")
+            <*> (nonEmpty <$> o .: "conflictPairs")
             <*> o
             .: "ready"
             <*> o
@@ -133,20 +131,13 @@ instance FromJSON FugueResults where
 data OutputFormat = Human | JSON | GhActions
     deriving stock (Show, Eq)
 
-data BachException
-    = GitError !Text
-    | ForgeError !Text
-    | RepoDetectionError !Text
-    deriving stock (Show, Typeable)
-
-instance Exception BachException
-
 data FugueOptions = FugueOptions
     { fugueDryRun :: !Bool
     , fugueBase :: !(Maybe Text)
     , fugueNoFetch :: !Bool
     , fugueOutput :: !OutputFormat
     , fuguePlanFile :: !FilePath
-    , fugueTargets :: ![PRIdentifier]
+    , fugueTargets :: !(NonEmpty PRIdentifier)
+    , fugueMustInclude :: ![PRIdentifier]
     }
     deriving stock (Show, Eq)

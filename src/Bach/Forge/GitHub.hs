@@ -1,5 +1,7 @@
 module Bach.Forge.GitHub
     ( mkGitHubForgeHandle
+    , GhCommandFailed (..)
+    , GhParseFailed (..)
     ) where
 
 import Bach.Forge (ForgeHandle (..))
@@ -9,6 +11,23 @@ import Data.Aeson (eitherDecodeStrict')
 import qualified Data.Text as T
 import qualified RIO.ByteString.Lazy as LBS
 import System.Process.Typed (proc, readProcess)
+
+data GhCommandFailed = GhCommandFailed
+    { gcfArgs :: ![String]
+    , gcfStderr :: !Text
+    }
+    deriving stock (Show, Eq)
+
+instance Exception GhCommandFailed where
+    displayException (GhCommandFailed args err) =
+        mconcat ["gh ", unwords args, " failed: ", T.unpack err]
+
+data GhParseFailed = GhParseFailed !Text
+    deriving stock (Show, Eq)
+
+instance Exception GhParseFailed where
+    displayException (GhParseFailed err) =
+        "Failed to parse gh JSON output: " <> T.unpack err
 
 -- | Create a ForgeHandle that uses the @gh@ CLI to talk to GitHub.
 mkGitHubForgeHandle :: RepoContext -> ForgeHandle
@@ -38,10 +57,10 @@ ghFetchPR ctx prid = do
     (exitCode, out, err) <- readProcess (proc "gh" args)
     case exitCode of
         ExitFailure _ ->
-            throwIO . ForgeError $ "gh pr view failed: " <> tshow err
+            throwIO $ GhCommandFailed args (tshow err)
         ExitSuccess ->
             case eitherDecodeStrict' (LBS.toStrict out) of
-                Left e -> throwIO . ForgeError $ "Failed to parse PR JSON: " <> T.pack e
+                Left e -> throwIO $ GhParseFailed (T.pack e)
                 Right pr -> pure pr
 
 ghMarkDraft :: RepoContext -> Int -> IO ()
@@ -59,7 +78,7 @@ ghMarkDraft ctx n = do
     (exitCode, _, err) <- readProcess (proc "gh" args)
     case exitCode of
         ExitFailure _ ->
-            throwIO . ForgeError $ "gh pr ready --undo failed: " <> tshow err
+            throwIO $ GhCommandFailed args (tshow err)
         ExitSuccess -> pure ()
 
 ghMarkReady :: RepoContext -> Int -> IO ()
@@ -76,5 +95,5 @@ ghMarkReady ctx n = do
     (exitCode, _, err) <- readProcess (proc "gh" args)
     case exitCode of
         ExitFailure _ ->
-            throwIO . ForgeError $ "gh pr ready failed: " <> tshow err
+            throwIO $ GhCommandFailed args (tshow err)
         ExitSuccess -> pure ()

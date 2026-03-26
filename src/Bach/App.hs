@@ -10,6 +10,7 @@ import Bach.Output (outputGhActions, outputHuman, outputJson)
 import Bach.Prelude
 import Bach.Types
 import Data.Aeson (eitherDecode, encode)
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Text as T
 import Options.Applicative
 import qualified RIO.ByteString.Lazy as LBS
@@ -98,13 +99,24 @@ fugueOptionsParser =
                 <> metavar "FILE"
                 <> help "Where to save the analysis plan"
             )
-        <*> some
+        <*> ( NE.fromList
+                <$> some
+                    ( parsePRIdentifier
+                        . T.pack
+                        <$> argument
+                            str
+                            ( metavar "PR..."
+                                <> help "PR numbers or branch names"
+                            )
+                    )
+            )
+        <*> many
             ( parsePRIdentifier
                 . T.pack
-                <$> argument
-                    str
-                    ( metavar "PR..."
-                        <> help "PR numbers or branch names"
+                <$> strOption
+                    ( long "must-include"
+                        <> metavar "PR"
+                        <> help "PR (number or branch) that must be in the ready batch"
                     )
             )
 
@@ -179,9 +191,10 @@ applyResults results = do
         markDraft pr.prNumber
 
     -- Draft base conflicts
-    forM_ results.frBaseConflicts $ \pr -> do
-        logInfo $ "Drafting base-conflicting #" <> display pr.prNumber <> "..."
-        markDraft pr.prNumber
+    forM_ results.frBaseConflicts $ \baseConflicts ->
+        forM_ baseConflicts $ \pr -> do
+            logInfo $ "Drafting base-conflicting #" <> display pr.prNumber <> "..."
+            markDraft pr.prNumber
 
     -- Mark ready PRs as ready
     forM_ results.frReady $ \pr -> do

@@ -1,17 +1,56 @@
 module Bach.Fugue
     ( runFugue
     , validateBatch
+    , MustIncludeBaseConflict (..)
+    , MustIncludePairwiseConflict (..)
+    , MustIncludeHigherOrderConflict (..)
     ) where
 
-import Bach.Batching (buildBatches)
+import Bach.Batching (buildBatches, selectBatch)
 import Bach.Conflicts (findConflicts, nPairs, partitionBase)
 import Bach.Forge (HasForgeHandle (..), fetchPR)
 import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
+import Bach.PRMap (PRMap)
+import qualified Bach.PRMap as PRMap
 import Bach.Prelude
 import Bach.Types
+import Data.List (intercalate)
+import Data.List.NonEmpty (nonEmpty)
+import Data.These.Combinators (justHere, justThere)
 import RIO.Directory (getCurrentDirectory)
-import qualified RIO.Map as Map
 import qualified RIO.Set as Set
+
+data MustIncludeBaseConflict = MustIncludeBaseConflict !(NonEmpty PullRequest)
+    deriving stock (Show, Eq)
+
+instance Exception MustIncludeBaseConflict where
+    displayException (MustIncludeBaseConflict prs) =
+        "Must-include PR(s) conflict with base: " <> showPRNums prs
+
+data MustIncludePairwiseConflict
+    = MustIncludePairwiseConflict !(NonEmpty ConflictPair)
+    deriving stock (Show, Eq)
+
+instance Exception MustIncludePairwiseConflict where
+    displayException (MustIncludePairwiseConflict cps) =
+        "Must-include PRs conflict with each other: "
+            <> intercalate
+                ", "
+                ( map
+                    (\cp -> mconcat ["#", show cp.cpLeft, " vs #", show cp.cpRight])
+                    (toList cps)
+                )
+
+data MustIncludeHigherOrderConflict
+    = MustIncludeHigherOrderConflict !(NonEmpty PullRequest)
+    deriving stock (Show, Eq)
+
+instance Exception MustIncludeHigherOrderConflict where
+    displayException (MustIncludeHigherOrderConflict prs) =
+        "Must-include PR(s) have higher-order conflicts: " <> showPRNums prs
+
+showPRNums :: NonEmpty PullRequest -> String
+showPRNums = intercalate ", " . map (\pr -> "#" <> show pr.prNumber) . toList
 
 -- | Run the fugue algorithm: pairwise conflict detection + graph coloring
 -- + sequential validation. Returns the largest conflict-free batch (ready)
@@ -27,56 +66,177 @@ runFugue opts = do
         dir = repoLocalPath ctx
 
     logInfo
-        $ "Detected repo: "
-        <> display (repoOwner ctx)
-        <> "/"
-        <> display (repoName ctx)
+        $ mconcat
+            [ "Detected repo: "
+            , display (repoOwner ctx)
+            , "/"
+            , display (repoName ctx)
+            ]
     logInfo $ "Base branch: " <> display base
 
-    -- Fetch PR metadata from forge
-    prs <- forM (fugueTargets opts) $ \prid -> do
-        pr <- fetchPR prid
-        logInfo $ "  #" <> display pr.prNumber <> " " <> display pr.prTitle
-        pure pr
+    -- Fetch all PR metadata, deduplicating by PR number
+    logInfo "Fetching PR metadata..."
+    (prMap, mustIncludeSet) <- fetchAllPRs opts
+
+    -- PRMap built from NonEmpty targets is always non-empty
+    prs <- case nonEmpty (PRMap.elems prMap) of
+        Just ne -> pure ne
+        Nothing -> error "runFugue: impossible — targets is NonEmpty"
+
+    unless (Set.null mustIncludeSet)
+        $ logInfo
+        $ "Must-include: "
+        <> displayShow (Set.toList mustIncludeSet)
 
     -- Fetch git refs
     unless (fugueNoFetch opts) $ do
         logInfo "Fetching refs..."
-        gitFetch dir (base : map (.prHeadRef) prs)
+        gitFetch dir (base : map (.prHeadRef) (toList prs))
 
     -- Phase 1a: Partition by base conflicts
     logInfo "Checking for base conflicts..."
-    (baseConflicts, validPRs) <- partitionBase dir base prs
-    unless (null baseConflicts)
-        $ logWarn
-        $ displayShow (length baseConflicts)
-        <> " PR(s) conflict with base and were excluded"
+    partitioned <- partitionBase dir base prs
+
+    let
+        baseConflicts = justHere partitioned
+        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
+
+    forM_ baseConflicts $ \cs ->
+        logWarn
+            $ displayShow (length cs)
+            <> " PR(s) conflict with base and were excluded"
+
+    -- Check must-include PRs aren't base-conflicting
+    forM_ (nonEmpty $ filter isMustInclude (maybe [] toList baseConflicts))
+        $ throwIO
+        . MustIncludeBaseConflict
+
+    case justThere partitioned of
+        Nothing -> do
+            logInfo "No valid PRs to batch"
+            pure
+                FugueResults
+                    { frBaseConflicts = baseConflicts
+                    , frConflictPairs = Nothing
+                    , frReady = []
+                    , frDeferred = []
+                    }
+        Just validPRs ->
+            runBatching mustIncludeSet dir base baseConflicts validPRs
+
+-- | Fetch target and must-include PRs, returning a deduplicated map
+-- and the set of must-include PR numbers.
+fetchAllPRs
+    :: (HasForgeHandle env, HasLogFunc env)
+    => FugueOptions
+    -> RIO env (PRMap, Set.Set Int)
+fetchAllPRs opts = do
+    prMap <-
+        foldM
+            (\m prid -> fst <$> fetchPRInto Nothing m prid)
+            PRMap.empty
+            (toList (fugueTargets opts))
+    foldM
+        ( \(m, s) prid -> do
+            (m', prNum) <- fetchPRInto (Just "(must-include)") m prid
+            pure (m', Set.insert prNum s)
+        )
+        (prMap, Set.empty)
+        (fugueMustInclude opts)
+
+-- | Fetch a PR and insert into the map. Logs with an optional suffix
+-- if the PR is new. Returns the updated map and the PR number.
+fetchPRInto
+    :: (HasForgeHandle env, HasLogFunc env)
+    => Maybe Utf8Builder
+    -> PRMap
+    -> PRIdentifier
+    -> RIO env (PRMap, Int)
+fetchPRInto mSuffix prMap prid = do
+    pr <- fetchPR prid
+    let
+        (isNew, prMap') = PRMap.insert pr prMap
+    when isNew
+        $ logInfo
+        $ mconcat
+            [ "  #"
+            , display pr.prNumber
+            , " "
+            , display pr.prTitle
+            , foldMap (" " <>) mSuffix
+            ]
+    pure (prMap', pr.prNumber)
+
+-- | Run pairwise conflict detection, graph coloring, and sequential
+-- validation on the non-empty set of valid PRs.
+runBatching
+    :: (HasLogFunc env)
+    => Set.Set Int
+    -> FilePath
+    -> Text
+    -> Maybe (NonEmpty PullRequest)
+    -> NonEmpty PullRequest
+    -> RIO env FugueResults
+runBatching mustIncludeSet dir base baseConflicts validPRs = do
+    let
+        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
 
     -- Phase 1b: Pairwise conflict detection
     logInfo
-        $ "Testing "
-        <> displayShow (length validPRs)
-        <> " PRs for pairwise conflicts ("
-        <> displayShow (nPairs (length validPRs))
-        <> " pairs)..."
-    conflictPairs <- findConflicts dir base validPRs
-
-    -- Graph coloring to find batch 1 (largest conflict-free set)
+        $ mconcat
+            [ "Testing "
+            , displayShow (length validPRs)
+            , " PRs for pairwise conflicts ("
+            , displayShow (nPairs (length validPRs))
+            , " pairs)..."
+            ]
+    mConflictPairs <- findConflicts dir base validPRs
     let
-        conflictSet = Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictPairs
+        conflictList = maybe [] toList mConflictPairs
+
+    -- Check must-include PRs don't conflict with each other
+    let
+        isMustIncludeConflict cp =
+            Set.member cp.cpLeft mustIncludeSet
+                && Set.member cp.cpRight mustIncludeSet
+    forM_ (nonEmpty $ filter isMustIncludeConflict conflictList)
+        $ throwIO
+        . MustIncludePairwiseConflict
+
+    -- Graph coloring
+    let
+        conflictSet =
+            Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictList
         batches = buildBatches validPRs conflictSet
-        batch1 = fromMaybe [] $ Map.lookup 1 batches
-        deferred = concatMap snd $ filter (\(k, _) -> k /= 1) $ Map.toList batches
+
+    -- Select candidate batch: largest containing all must-include PRs
+    (candidateBatch, deferred) <-
+        either throwIO pure $ selectBatch mustIncludeSet batches
+
+    let
+        candidateList = toList candidateBatch
 
     logInfo
-        $ displayShow (length batch1)
-        <> " PR(s) in candidate batch, "
-        <> displayShow (length deferred)
-        <> " deferred by pairwise conflicts"
+        $ mconcat
+            [ displayShow (length candidateBatch)
+            , " PR(s) in candidate batch, "
+            , displayShow (length deferred)
+            , " deferred by pairwise conflicts"
+            ]
 
-    -- Phase 2: Validate batch 1 by sequential merge-tree
+    -- Phase 2: Validate candidate batch by sequential merge-tree
+    -- Must-include PRs go first so they're never evicted by others
     logInfo "Validating batch..."
-    (ready, evicted) <- validateBatch dir base batch1
+    let
+        mustFirst = filter isMustInclude candidateList
+        others = filter (not . isMustInclude) candidateList
+        orderedBatch = mustFirst <> others
+    (ready, evicted) <- validateBatch dir base orderedBatch
+
+    -- Check must-include PRs weren't evicted
+    forM_ (nonEmpty $ filter isMustInclude evicted)
+        $ throwIO
+        . MustIncludeHigherOrderConflict
 
     unless (null evicted)
         $ logWarn
@@ -90,7 +250,7 @@ runFugue opts = do
     pure
         FugueResults
             { frBaseConflicts = baseConflicts
-            , frConflictPairs = conflictPairs
+            , frConflictPairs = mConflictPairs
             , frReady = ready
             , frDeferred = deferred <> evicted
             }
@@ -115,5 +275,6 @@ validateBatch dir base prs = go prs ("origin/" <> base) [] []
                     Just commit -> go rest commit (pr : clean) evicted
                     Nothing -> go rest accumulated clean (pr : evicted)
             MergeConflict _ -> do
-                logInfo $ "    #" <> display pr.prNumber <> " evicted (higher-order conflict)"
+                logInfo
+                    $ mconcat ["    #", display pr.prNumber, " evicted (higher-order conflict)"]
                 go rest accumulated clean (pr : evicted)
