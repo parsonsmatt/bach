@@ -14,6 +14,7 @@ import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
 import Data.List (find, intercalate)
+import Data.List.NonEmpty (nonEmpty)
 import qualified Data.Text as T
 import RIO.Directory (getCurrentDirectory)
 import qualified RIO.Set as Set
@@ -27,14 +28,15 @@ instance Exception MustIncludeNotFound where
             PRById n -> "#" <> show n
             PRByBranch b -> T.unpack b
 
-data MustIncludeBaseConflict = MustIncludeBaseConflict ![PullRequest]
+data MustIncludeBaseConflict = MustIncludeBaseConflict !(NonEmpty PullRequest)
     deriving stock (Show, Eq)
 
 instance Exception MustIncludeBaseConflict where
     displayException (MustIncludeBaseConflict prs) =
         "Must-include PR(s) conflict with base: " <> showPRNums prs
 
-data MustIncludePairwiseConflict = MustIncludePairwiseConflict ![ConflictPair]
+data MustIncludePairwiseConflict
+    = MustIncludePairwiseConflict !(NonEmpty ConflictPair)
     deriving stock (Show, Eq)
 
 instance Exception MustIncludePairwiseConflict where
@@ -42,17 +44,21 @@ instance Exception MustIncludePairwiseConflict where
         "Must-include PRs conflict with each other: "
             <> intercalate
                 ", "
-                (map (\cp -> "#" <> show cp.cpLeft <> " vs #" <> show cp.cpRight) cps)
+                ( map
+                    (\cp -> "#" <> show cp.cpLeft <> " vs #" <> show cp.cpRight)
+                    (toList cps)
+                )
 
-data MustIncludeHigherOrderConflict = MustIncludeHigherOrderConflict ![PullRequest]
+data MustIncludeHigherOrderConflict
+    = MustIncludeHigherOrderConflict !(NonEmpty PullRequest)
     deriving stock (Show, Eq)
 
 instance Exception MustIncludeHigherOrderConflict where
     displayException (MustIncludeHigherOrderConflict prs) =
         "Must-include PR(s) have higher-order conflicts: " <> showPRNums prs
 
-showPRNums :: [PullRequest] -> String
-showPRNums = intercalate ", " . map (\pr -> "#" <> show pr.prNumber)
+showPRNums :: NonEmpty PullRequest -> String
+showPRNums = intercalate ", " . map (\pr -> "#" <> show pr.prNumber) . toList
 
 -- | Run the fugue algorithm: pairwise conflict detection + graph coloring
 -- + sequential validation. Returns the largest conflict-free batch (ready)
@@ -93,7 +99,7 @@ runFugue opts = do
     -- Fetch git refs
     unless (fugueNoFetch opts) $ do
         logInfo "Fetching refs..."
-        gitFetch dir (base : map (.prHeadRef) prs)
+        gitFetch dir (base : toList (fmap (.prHeadRef) prs))
 
     -- Phase 1a: Partition by base conflicts
     logInfo "Checking for base conflicts..."
@@ -104,11 +110,9 @@ runFugue opts = do
         <> " PR(s) conflict with base and were excluded"
 
     -- Check must-include PRs aren't base-conflicting
-    let
-        mustIncludeBaseConflicts = filter isMustInclude baseConflicts
-    unless (null mustIncludeBaseConflicts)
+    forM_ (nonEmpty $ filter isMustInclude baseConflicts)
         $ throwIO
-        $ MustIncludeBaseConflict mustIncludeBaseConflicts
+        . MustIncludeBaseConflict
 
     -- Phase 1b: Pairwise conflict detection
     logInfo
@@ -121,23 +125,19 @@ runFugue opts = do
 
     -- Check must-include PRs don't conflict with each other
     let
-        mustIncludeConflicts =
-            filter
-                ( \cp ->
-                    Set.member cp.cpLeft mustIncludeSet
-                        && Set.member cp.cpRight mustIncludeSet
-                )
-                conflictPairs
-    unless (null mustIncludeConflicts)
+        isMustIncludeConflict cp =
+            Set.member cp.cpLeft mustIncludeSet
+                && Set.member cp.cpRight mustIncludeSet
+    forM_ (nonEmpty $ filter isMustIncludeConflict conflictPairs)
         $ throwIO
-        $ MustIncludePairwiseConflict mustIncludeConflicts
+        . MustIncludePairwiseConflict
 
     -- Graph coloring
     let
         conflictSet =
             Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictPairs
 
-    case buildBatches validPRs conflictSet of
+    case nonEmpty validPRs of
         Nothing -> do
             logInfo "No valid PRs to batch"
             pure
@@ -147,7 +147,10 @@ runFugue opts = do
                     , frReady = []
                     , frDeferred = []
                     }
-        Just batches -> do
+        Just validNE -> do
+            let
+                batches = buildBatches validNE conflictSet
+
             -- Select candidate batch: largest containing all must-include PRs
             (candidateBatch, deferred) <-
                 either throwIO pure $ selectBatch mustIncludeSet batches
@@ -171,11 +174,9 @@ runFugue opts = do
             (ready, evicted) <- validateBatch dir base orderedBatch
 
             -- Check must-include PRs weren't evicted
-            let
-                mustIncludeEvicted = filter isMustInclude evicted
-            unless (null mustIncludeEvicted)
+            forM_ (nonEmpty $ filter isMustInclude evicted)
                 $ throwIO
-                $ MustIncludeHigherOrderConflict mustIncludeEvicted
+                . MustIncludeHigherOrderConflict
 
             unless (null evicted)
                 $ logWarn
@@ -196,16 +197,20 @@ runFugue opts = do
 
 -- | Resolve must-include identifiers against the fetched PR list.
 resolveMustInclude
-    :: [PullRequest] -> [PRIdentifier] -> Either MustIncludeNotFound (Set.Set Int)
+    :: (Foldable f)
+    => f PullRequest
+    -> [PRIdentifier]
+    -> Either MustIncludeNotFound (Set.Set Int)
 resolveMustInclude _ [] = Right Set.empty
 resolveMustInclude prs ids = Set.fromList <$> mapM resolve ids
   where
+    prList = toList prs
     resolve (PRById prNum) =
-        case find (\pr -> pr.prNumber == prNum) prs of
+        case find (\pr -> pr.prNumber == prNum) prList of
             Just _ -> Right prNum
             Nothing -> Left $ MustIncludeNotFound (PRById prNum)
     resolve (PRByBranch branch) =
-        case find (\pr -> pr.prHeadRef == branch) prs of
+        case find (\pr -> pr.prHeadRef == branch) prList of
             Just pr -> Right pr.prNumber
             Nothing -> Left $ MustIncludeNotFound (PRByBranch branch)
 

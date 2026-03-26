@@ -1,6 +1,8 @@
 module Bach.NonEmptyMap
     ( NonEmptyMap
     , fromMap
+    , fromNonEmpty
+    , fromNonEmptyWith
     , singleton
     , toNonEmpty
     , toMap
@@ -20,6 +22,15 @@ fromMap :: Map.Map k v -> Maybe (NonEmptyMap k v)
 fromMap m
     | Map.null m = Nothing
     | otherwise = Just (NonEmptyMap m)
+
+-- | Build from a non-empty list of key-value pairs.
+fromNonEmpty :: (Ord k) => NonEmpty (k, v) -> NonEmptyMap k v
+fromNonEmpty nel = NonEmptyMap $ Map.fromList (toList nel)
+
+-- | Build from a non-empty list, combining values for duplicate keys.
+fromNonEmptyWith
+    :: (Ord k) => (v -> v -> v) -> NonEmpty (k, v) -> NonEmptyMap k v
+fromNonEmptyWith f nel = NonEmptyMap $ Map.fromListWith f (toList nel)
 
 -- | A map with exactly one entry.
 singleton :: k -> v -> NonEmptyMap k v

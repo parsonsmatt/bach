@@ -22,14 +22,17 @@ instance Exception NoBatchEligible where
             <> intercalate ", #" (map show (Set.toList required))
 
 -- | Greedy graph coloring: assign each PR to the lowest batch number
--- not used by any conflicting neighbor. Returns 'Nothing' for empty input.
+-- not used by any conflicting neighbor. Every PR in the non-empty input
+-- is assigned exactly one batch, so the output is guaranteed non-empty.
 buildBatches
-    :: [PullRequest]
+    :: NonEmpty PullRequest
     -> Set.Set (Int, Int)
-    -> Maybe (NonEmptyMap Int (NonEmpty PullRequest))
-buildBatches [] _ = Nothing
-buildBatches prs conflicts = NEM.fromMap resultMap
+    -> NonEmptyMap Int (NonEmpty PullRequest)
+buildBatches prs conflicts =
+    NEM.fromNonEmptyWith (flip (<>)) assignments
   where
+    prList = toList prs
+
     adjMap :: Map.Map Int (Set.Set Int)
     adjMap =
         Map.fromListWith (<>)
@@ -38,7 +41,7 @@ buildBatches prs conflicts = NEM.fromMap resultMap
     pairToEdges (left, right) =
         [(left, Set.singleton right), (right, Set.singleton left)]
 
-    assignments = foldl' assign Map.empty prs
+    batchOf = foldl' assign Map.empty prList
 
     assign assigned pr =
         let
@@ -48,15 +51,13 @@ buildBatches prs conflicts = NEM.fromMap resultMap
          in
             Map.insert pr.prNumber batch assigned
 
-    resultMap =
-        Map.fromListWith (flip (<>))
-            $ mapMaybe (assignmentEntry assignments) prs
+    assignments = fmap assignEntry prs
 
-assignmentEntry
-    :: Map.Map Int Int -> PullRequest -> Maybe (Int, NonEmpty PullRequest)
-assignmentEntry assignments pr = do
-    batch <- Map.lookup pr.prNumber assignments
-    pure (batch, pr :| [])
+    assignEntry pr =
+        let
+            batch = fromMaybe 1 $ Map.lookup pr.prNumber batchOf
+         in
+            (batch, pr :| [])
 
 -- | Find the lowest batch number (starting from 1) not in the given set.
 firstAvailableBatch :: Set.Set Int -> Int

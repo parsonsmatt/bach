@@ -11,10 +11,10 @@ import Data.List (tails, uncons)
 
 -- | Partition PRs into (conflicts with base, clean).
 partitionBase
-    :: (HasLogFunc env)
-    => FilePath -> Text -> [PullRequest] -> RIO env ([PullRequest], [PullRequest])
+    :: (HasLogFunc env, Foldable f)
+    => FilePath -> Text -> f PullRequest -> RIO env ([PullRequest], [PullRequest])
 partitionBase dir base prs = do
-    results <- forM prs $ \pr -> do
+    results <- forM (toList prs) $ \pr -> do
         result <- gitMergeTree dir ("origin/" <> base) ("origin/" <> pr.prHeadRef)
         case result of
             MergeConflict _ -> do

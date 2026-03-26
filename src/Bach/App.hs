@@ -10,6 +10,7 @@ import Bach.Output (outputGhActions, outputHuman, outputJson)
 import Bach.Prelude
 import Bach.Types
 import Data.Aeson (eitherDecode, encode)
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Text as T
 import Options.Applicative
 import qualified RIO.ByteString.Lazy as LBS
@@ -98,13 +99,15 @@ fugueOptionsParser =
                 <> metavar "FILE"
                 <> help "Where to save the analysis plan"
             )
-        <*> some
-            ( parsePRIdentifier
-                . T.pack
-                <$> argument
-                    str
-                    ( metavar "PR..."
-                        <> help "PR numbers or branch names"
+        <*> ( NE.fromList
+                <$> some
+                    ( parsePRIdentifier
+                        . T.pack
+                        <$> argument
+                            str
+                            ( metavar "PR..."
+                                <> help "PR numbers or branch names"
+                            )
                     )
             )
         <*> many

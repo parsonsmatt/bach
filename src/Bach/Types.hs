@@ -138,7 +138,7 @@ data FugueOptions = FugueOptions
     , fugueNoFetch :: !Bool
     , fugueOutput :: !OutputFormat
     , fuguePlanFile :: !FilePath
-    , fugueTargets :: ![PRIdentifier]
+    , fugueTargets :: !(NonEmpty PRIdentifier)
     , fugueMustInclude :: ![PRIdentifier]
     }
     deriving stock (Show, Eq)
