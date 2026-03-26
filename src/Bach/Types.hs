@@ -138,7 +138,7 @@ data BachException
     | ForgeError !Text
     | RepoDetectionError !Text
     | MustIncludeError !Text
-    deriving stock (Show, Typeable)
+    deriving stock (Show, Eq, Typeable)
 
 instance Exception BachException
 

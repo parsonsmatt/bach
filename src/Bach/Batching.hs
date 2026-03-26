@@ -1,10 +1,11 @@
 module Bach.Batching
     ( buildBatches
+    , selectBatch
     ) where
 
 import Bach.Prelude
 import Bach.Types
-import RIO.List (headMaybe)
+import RIO.List (headMaybe, sortOn)
 import qualified RIO.Map as Map
 import qualified RIO.Set as Set
 
@@ -43,3 +44,38 @@ assignmentEntry assignments pr = do
 firstAvailableBatch :: Set.Set Int -> Int
 firstAvailableBatch used =
     fromMaybe 1 $ headMaybe $ filter (`Set.notMember` used) [1 ..]
+
+-- | Select the best batch: the largest one containing all must-include PRs.
+-- When must-include is empty, just picks the largest batch.
+-- Returns (selected batch, all other PRs), or Left if no batch is eligible.
+selectBatch
+    :: Set.Set Int
+    -> Map.Map Int [PullRequest]
+    -> Either BachException ([PullRequest], [PullRequest])
+selectBatch mustInclude batches
+    | Map.null batches = Right ([], [])
+    | otherwise =
+        let
+            batchList = Map.toList batches
+            eligible =
+                filter (containsMustInclude . snd) batchList
+            sorted =
+                sortOn (Down . length . snd) eligible
+         in
+            case sorted of
+                [] ->
+                    Left
+                        $ MustIncludeError "No batch contains all must-include PRs"
+                ((chosenKey, chosen) : _) ->
+                    let
+                        deferred =
+                            concatMap snd
+                                $ filter (\(k, _) -> k /= chosenKey) batchList
+                     in
+                        Right (chosen, deferred)
+  where
+    containsMustInclude prs =
+        let
+            prNums = Set.fromList $ map (.prNumber) prs
+         in
+            Set.isSubsetOf mustInclude prNums

@@ -1,8 +1,7 @@
 module Bach.BatchingSpec (spec) where
 
-import Bach.Batching (buildBatches)
+import Bach.Batching (buildBatches, selectBatch)
 import Bach.Conflicts (nPairs)
-import Bach.Fugue (selectBatch)
 import Bach.Prelude
 import Bach.Types
 import qualified RIO.Map as Map
@@ -83,36 +82,32 @@ spec = do
             let
                 conflicts = Set.fromList [(1, 4), (1, 5), (1, 6), (1, 7)]
                 batches = buildBatches [prA, prB, prC, prD, prE, prF, prG] conflicts
-            (selected, deferred) <- selectBatch Set.empty batches
-            selected `shouldBe` [prD, prE, prF, prG]
-            deferred `shouldBe` [prA, prB, prC]
+            selectBatch Set.empty batches
+                `shouldBe` Right ([prD, prE, prF, prG], [prA, prB, prC])
 
         it "picks the largest batch containing must-include PR" do
             -- Same setup. With must-include A, only batch 1 is eligible.
             let
                 conflicts = Set.fromList [(1, 4), (1, 5), (1, 6), (1, 7)]
                 batches = buildBatches [prA, prB, prC, prD, prE, prF, prG] conflicts
-            (selected, deferred) <- selectBatch (Set.singleton 1) batches
-            selected `shouldBe` [prA, prB, prC]
-            deferred `shouldBe` [prD, prE, prF, prG]
+            selectBatch (Set.singleton 1) batches
+                `shouldBe` Right ([prA, prB, prC], [prD, prE, prF, prG])
 
         it "picks batch 1 when it is the largest" do
             -- A-B conflict. Batch 1 = [A,C,D], batch 2 = [B].
             let
                 conflicts = Set.singleton (1, 2)
                 batches = buildBatches [prA, prB, prC, prD] conflicts
-            (selected, _) <- selectBatch Set.empty batches
-            selected `shouldBe` [prA, prC, prD]
+            fmap fst (selectBatch Set.empty batches)
+                `shouldBe` Right [prA, prC, prD]
 
         it "errors when must-include PRs are in different batches" do
-            -- A-B conflict. Must-include both — but they're in different batches.
             let
                 conflicts = Set.singleton (1, 2)
                 batches = buildBatches [prA, prB] conflicts
             selectBatch (Set.fromList [1, 2]) batches
-                `shouldThrow` \(MustIncludeError _) -> True
+                `shouldBe` Left (MustIncludeError "No batch contains all must-include PRs")
 
         it "returns empty for empty batches" do
-            (selected, deferred) <- selectBatch Set.empty Map.empty
-            selected `shouldBe` []
-            deferred `shouldBe` []
+            selectBatch Set.empty Map.empty
+                `shouldBe` Right ([], [])
