@@ -44,8 +44,8 @@ spec = do
                 pr = mkPR 1 "clean"
             result <- runRIO lf $ partitionBase dir "main" (pr :| [])
             case result of
-                That good -> length good `shouldBe` 1
-                other -> expectationFailure $ "Expected That, got: " <> show other
+                That (good :| []) -> good.prNumber `shouldBe` 1
+                other -> expectationFailure $ "Expected That (1 PR), got: " <> show other
 
         it "classifies conflicting PRs as base conflicts" $ withTestRepo \dir -> withLog \lf -> do
             createBranch
@@ -61,8 +61,8 @@ spec = do
                 pr = mkPR 1 "old-branch"
             result <- runRIO lf $ partitionBase dir "main" (pr :| [])
             case result of
-                This bad -> length bad `shouldBe` 1
-                other -> expectationFailure $ "Expected This, got: " <> show other
+                This (bad :| []) -> bad.prNumber `shouldBe` 1
+                other -> expectationFailure $ "Expected This (1 PR), got: " <> show other
 
     describe "findConflicts" do
         it "finds no conflicts between independent branches" $ withTestRepo \dir -> withLog \lf -> do
@@ -92,7 +92,9 @@ spec = do
             let
                 prs = mkPR 1 "ta" :| [mkPR 2 "tb", mkPR 3 "tc"]
             conflicts <- runRIO lf $ findConflicts dir "main" prs
-            fmap length conflicts `shouldBe` Just 3
+            case conflicts of
+                Just (_ :| [_, _]) -> pure ()
+                other -> expectationFailure $ "Expected 3 conflicts, got: " <> show other
 
         it "only flags the conflicting pairs, not clean ones" $ withTestRepo \dir -> withLog \lf -> do
             createBranch dir "pa" [("file.txt", "AAA\nline2\nline3\nline4\nline5\n")]
