@@ -72,11 +72,23 @@ bach fugue --apply 101 102 103 104 105
 bach apply-plan /tmp/bach-plan.json
 ```
 
+### Must-Include
+
+Need a specific PR in the ready batch? `--must-include` finds the largest conflict-free set that includes it:
+
+```bash
+# Ensure PR #104 is in the ready batch
+bach fugue --must-include 104 101 102 103 104 105
+
+# Must-include PRs not in the target list are fetched automatically
+bach fugue --must-include feature/urgent 101 102 103
+```
+
 ### Options
 
 ```
 bach fugue [--apply] [--base BRANCH] [--no-fetch] [--json | --gh-actions]
-           [--plan-file FILE] PR...
+           [--plan-file FILE] [--must-include PR]... PR...
 ```
 
 | Flag | Description |
@@ -87,6 +99,7 @@ bach fugue [--apply] [--base BRANCH] [--no-fetch] [--json | --gh-actions]
 | `--json` | Output results as JSON |
 | `--gh-actions` | Output pipeable `gh` CLI commands |
 | `--plan-file FILE` | Where to save the plan (default: `/tmp/bach-plan.json`) |
+| `--must-include PR` | PR that must be in the ready batch (repeatable) |
 
 ## How It Works
 
@@ -94,9 +107,9 @@ Bach's algorithm has three movements:
 
 **I. Exposition** — Pairwise conflict detection. Every pair of PRs is tested with `git merge-tree --write-tree`, which checks mergeability in-memory without touching the working directory. For each left PR, bach merges it into the base branch, creates a temporary commit, and tests every other PR against that combined state. This is O(n^2) but each test is fast.
 
-**II. Development** — Graph coloring. The conflict pairs form an undirected graph. Bach greedily assigns each PR to the lowest-numbered batch not used by any conflicting neighbor. Batch 1 is the largest conflict-free set.
+**II. Development** — Graph coloring. The conflict pairs form an undirected graph. Bach greedily assigns each PR to the lowest-numbered batch not used by any conflicting neighbor, then selects the largest batch as the candidate set. With `--must-include`, it selects the largest batch containing all must-include PRs.
 
-**III. Recapitulation** — Sequential validation. The pairwise test can miss higher-order conflicts (where A+B and A+C merge cleanly, but A+B+C doesn't). Bach validates batch 1 by sequentially merging each PR into an accumulated tree. Any PR that fails is evicted to the deferred set.
+**III. Recapitulation** — Sequential validation. The pairwise test can miss higher-order conflicts (where A+B and A+C merge cleanly, but A+B+C doesn't). Bach validates the candidate batch by sequentially merging each PR into an accumulated tree. Any PR that fails is evicted to the deferred set.
 
 The result is a ready set that is guaranteed to merge cleanly together.
 
