@@ -1,6 +1,7 @@
 module Bach.Fugue
     ( runFugue
     , validateBatch
+    , selectBatch
     ) where
 
 import Bach.Batching (buildBatches)
@@ -9,7 +10,9 @@ import Bach.Forge (HasForgeHandle (..), fetchPR)
 import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
+import qualified Data.Text as T
 import RIO.Directory (getCurrentDirectory)
+import RIO.List (sortOn)
 import qualified RIO.Map as Map
 import qualified RIO.Set as Set
 
@@ -39,6 +42,13 @@ runFugue opts = do
         logInfo $ "  #" <> display pr.prNumber <> " " <> display pr.prTitle
         pure pr
 
+    -- Resolve must-include PRs
+    mustIncludeSet <- resolveMustInclude prs (fugueMustInclude opts)
+    unless (Set.null mustIncludeSet)
+        $ logInfo
+        $ "Must-include: "
+        <> displayShow (Set.toList mustIncludeSet)
+
     -- Fetch git refs
     unless (fugueNoFetch opts) $ do
         logInfo "Fetching refs..."
@@ -52,6 +62,18 @@ runFugue opts = do
         $ displayShow (length baseConflicts)
         <> " PR(s) conflict with base and were excluded"
 
+    -- Check must-include PRs aren't base-conflicting
+    let
+        mustIncludeBaseConflicts =
+            filter (\pr -> Set.member pr.prNumber mustIncludeSet) baseConflicts
+    unless (null mustIncludeBaseConflicts)
+        $ throwIO
+        $ MustIncludeError
+        $ "Must-include PR(s) conflict with base: "
+        <> T.intercalate
+            ", "
+            (map (\pr -> "#" <> tshow pr.prNumber) mustIncludeBaseConflicts)
+
     -- Phase 1b: Pairwise conflict detection
     logInfo
         $ "Testing "
@@ -61,22 +83,64 @@ runFugue opts = do
         <> " pairs)..."
     conflictPairs <- findConflicts dir base validPRs
 
-    -- Graph coloring to find batch 1 (largest conflict-free set)
+    -- Check must-include PRs don't conflict with each other
     let
-        conflictSet = Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictPairs
+        mustIncludeConflicts =
+            filter
+                ( \cp ->
+                    Set.member cp.cpLeft mustIncludeSet
+                        && Set.member cp.cpRight mustIncludeSet
+                )
+                conflictPairs
+    unless (null mustIncludeConflicts)
+        $ throwIO
+        $ MustIncludeError
+        $ "Must-include PRs conflict with each other: "
+        <> T.intercalate
+            ", "
+            ( map
+                (\cp -> "#" <> tshow cp.cpLeft <> " vs #" <> tshow cp.cpRight)
+                mustIncludeConflicts
+            )
+
+    -- Graph coloring
+    let
+        conflictSet =
+            Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictPairs
         batches = buildBatches validPRs conflictSet
-        batch1 = fromMaybe [] $ Map.lookup 1 batches
-        deferred = concatMap snd $ filter (\(k, _) -> k /= 1) $ Map.toList batches
+
+    -- Select candidate batch: largest batch containing all must-include PRs
+    (candidateBatch, deferred) <-
+        selectBatch mustIncludeSet batches
 
     logInfo
-        $ displayShow (length batch1)
+        $ displayShow (length candidateBatch)
         <> " PR(s) in candidate batch, "
         <> displayShow (length deferred)
         <> " deferred by pairwise conflicts"
 
-    -- Phase 2: Validate batch 1 by sequential merge-tree
+    -- Phase 2: Validate candidate batch by sequential merge-tree
+    -- Must-include PRs go first so they're never evicted by others
     logInfo "Validating batch..."
-    (ready, evicted) <- validateBatch dir base batch1
+    let
+        mustFirst =
+            filter (\pr -> Set.member pr.prNumber mustIncludeSet) candidateBatch
+        others =
+            filter (\pr -> Set.notMember pr.prNumber mustIncludeSet) candidateBatch
+        orderedBatch = mustFirst <> others
+    (ready, evicted) <- validateBatch dir base orderedBatch
+
+    -- Check must-include PRs weren't evicted (higher-order conflict among them)
+    let
+        mustIncludeEvicted =
+            filter (\pr -> Set.member pr.prNumber mustIncludeSet) evicted
+    unless (null mustIncludeEvicted)
+        $ throwIO
+        $ MustIncludeError
+        $ "Must-include PR(s) have higher-order conflicts: "
+        <> T.intercalate
+            ", "
+            (map (\pr -> "#" <> tshow pr.prNumber) mustIncludeEvicted)
 
     unless (null evicted)
         $ logWarn
@@ -94,6 +158,72 @@ runFugue opts = do
             , frReady = ready
             , frDeferred = deferred <> evicted
             }
+
+-- | Resolve must-include identifiers against the fetched PR list.
+resolveMustInclude
+    :: (MonadIO m) => [PullRequest] -> [PRIdentifier] -> m (Set.Set Int)
+resolveMustInclude _ [] = pure Set.empty
+resolveMustInclude prs ids = Set.fromList <$> mapM resolve ids
+  where
+    resolve (PRById n) =
+        case filter (\pr -> pr.prNumber == n) prs of
+            (_ : _) -> pure n
+            [] ->
+                throwIO
+                    $ MustIncludeError
+                    $ "Must-include PR #"
+                    <> tshow n
+                    <> " not found in targets"
+    resolve (PRByBranch b) =
+        case filter (\pr -> pr.prHeadRef == b) prs of
+            [pr] -> pure pr.prNumber
+            [] ->
+                throwIO
+                    $ MustIncludeError
+                    $ "Must-include branch '"
+                    <> b
+                    <> "' not found in targets"
+            _ ->
+                throwIO
+                    $ MustIncludeError
+                    $ "Multiple PRs match must-include branch '"
+                    <> b
+                    <> "'"
+
+-- | Select the best batch: the largest one containing all must-include PRs.
+-- When must-include is empty, just picks the largest batch.
+-- Returns (selected batch, all other PRs).
+selectBatch
+    :: (MonadIO m)
+    => Set.Set Int
+    -> Map.Map Int [PullRequest]
+    -> m ([PullRequest], [PullRequest])
+selectBatch mustInclude batches
+    | Map.null batches = pure ([], [])
+    | otherwise = do
+        let
+            batchList = Map.toList batches
+            eligible =
+                filter (containsMustInclude . snd) batchList
+            sorted =
+                sortOn (negate . length . snd) eligible
+        case sorted of
+            [] ->
+                throwIO
+                    $ MustIncludeError "No batch contains all must-include PRs"
+            ((chosenKey, chosen) : _) ->
+                let
+                    deferred =
+                        concatMap snd
+                            $ filter (\(k, _) -> k /= chosenKey) batchList
+                 in
+                    pure (chosen, deferred)
+  where
+    containsMustInclude prs =
+        let
+            prNums = Set.fromList $ map (.prNumber) prs
+         in
+            Set.isSubsetOf mustInclude prNums
 
 -- | Validate a batch by sequentially merging each PR into an accumulated
 -- tree via merge-tree. Returns (clean PRs, evicted PRs).

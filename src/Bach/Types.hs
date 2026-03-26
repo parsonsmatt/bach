@@ -137,6 +137,7 @@ data BachException
     = GitError !Text
     | ForgeError !Text
     | RepoDetectionError !Text
+    | MustIncludeError !Text
     deriving stock (Show, Typeable)
 
 instance Exception BachException
@@ -148,5 +149,6 @@ data FugueOptions = FugueOptions
     , fugueOutput :: !OutputFormat
     , fuguePlanFile :: !FilePath
     , fugueTargets :: ![PRIdentifier]
+    , fugueMustInclude :: ![PRIdentifier]
     }
     deriving stock (Show, Eq)

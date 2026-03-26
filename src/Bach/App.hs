@@ -107,6 +107,15 @@ fugueOptionsParser =
                         <> help "PR numbers or branch names"
                     )
             )
+        <*> many
+            ( parsePRIdentifier
+                . T.pack
+                <$> strOption
+                    ( long "must-include"
+                        <> metavar "PR"
+                        <> help "PR (number or branch) that must be in the ready batch"
+                    )
+            )
 
 parseOutputFormat :: Parser OutputFormat
 parseOutputFormat =
