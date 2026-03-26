@@ -136,50 +136,63 @@ runFugue opts = do
     let
         conflictSet =
             Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictPairs
-        batches = buildBatches validPRs conflictSet
 
-    -- Select candidate batch: largest batch containing all must-include PRs
-    (candidateBatch, deferred) <-
-        either throwIO pure $ selectBatch mustIncludeSet batches
+    case buildBatches validPRs conflictSet of
+        Nothing -> do
+            logInfo "No valid PRs to batch"
+            pure
+                FugueResults
+                    { frBaseConflicts = baseConflicts
+                    , frConflictPairs = conflictPairs
+                    , frReady = []
+                    , frDeferred = []
+                    }
+        Just batches -> do
+            -- Select candidate batch: largest containing all must-include PRs
+            (candidateBatch, deferred) <-
+                either throwIO pure $ selectBatch mustIncludeSet batches
 
-    logInfo
-        $ displayShow (length candidateBatch)
-        <> " PR(s) in candidate batch, "
-        <> displayShow (length deferred)
-        <> " deferred by pairwise conflicts"
+            let
+                candidateList = toList candidateBatch
 
-    -- Phase 2: Validate candidate batch by sequential merge-tree
-    -- Must-include PRs go first so they're never evicted by others
-    logInfo "Validating batch..."
-    let
-        mustFirst = filter isMustInclude candidateBatch
-        others = filter (not . isMustInclude) candidateBatch
-        orderedBatch = mustFirst <> others
-    (ready, evicted) <- validateBatch dir base orderedBatch
+            logInfo
+                $ displayShow (length candidateBatch)
+                <> " PR(s) in candidate batch, "
+                <> displayShow (length deferred)
+                <> " deferred by pairwise conflicts"
 
-    -- Check must-include PRs weren't evicted (higher-order conflict among them)
-    let
-        mustIncludeEvicted = filter isMustInclude evicted
-    unless (null mustIncludeEvicted)
-        $ throwIO
-        $ MustIncludeHigherOrderConflict mustIncludeEvicted
+            -- Phase 2: Validate candidate batch by sequential merge-tree
+            -- Must-include PRs go first so they're never evicted by others
+            logInfo "Validating batch..."
+            let
+                mustFirst = filter isMustInclude candidateList
+                others = filter (not . isMustInclude) candidateList
+                orderedBatch = mustFirst <> others
+            (ready, evicted) <- validateBatch dir base orderedBatch
 
-    unless (null evicted)
-        $ logWarn
-        $ displayShow (length evicted)
-        <> " PR(s) evicted during validation (higher-order conflicts)"
+            -- Check must-include PRs weren't evicted
+            let
+                mustIncludeEvicted = filter isMustInclude evicted
+            unless (null mustIncludeEvicted)
+                $ throwIO
+                $ MustIncludeHigherOrderConflict mustIncludeEvicted
 
-    logInfo
-        $ displayShow (length ready)
-        <> " PR(s) ready to merge"
+            unless (null evicted)
+                $ logWarn
+                $ displayShow (length evicted)
+                <> " PR(s) evicted during validation (higher-order conflicts)"
 
-    pure
-        FugueResults
-            { frBaseConflicts = baseConflicts
-            , frConflictPairs = conflictPairs
-            , frReady = ready
-            , frDeferred = deferred <> evicted
-            }
+            logInfo
+                $ displayShow (length ready)
+                <> " PR(s) ready to merge"
+
+            pure
+                FugueResults
+                    { frBaseConflicts = baseConflicts
+                    , frConflictPairs = conflictPairs
+                    , frReady = ready
+                    , frDeferred = deferred <> evicted
+                    }
 
 -- | Resolve must-include identifiers against the fetched PR list.
 resolveMustInclude
