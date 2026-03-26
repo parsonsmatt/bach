@@ -6,6 +6,7 @@ module Bach.Batching
 
 import Bach.Prelude
 import Bach.Types
+import Data.List (intercalate)
 import RIO.List (headMaybe, sortOn)
 import qualified RIO.Map as Map
 import qualified RIO.Set as Set
@@ -13,7 +14,10 @@ import qualified RIO.Set as Set
 data NoBatchEligible = NoBatchEligible !(Set.Set Int)
     deriving stock (Show, Eq, Typeable)
 
-instance Exception NoBatchEligible
+instance Exception NoBatchEligible where
+    displayException (NoBatchEligible required) =
+        "No batch contains all must-include PRs: #"
+            <> intercalate ", #" (map show (Set.toList required))
 
 -- | Greedy graph coloring: assign each PR to the lowest batch number
 -- not used by any conflicting neighbor.

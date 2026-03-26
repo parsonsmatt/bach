@@ -13,29 +13,46 @@ import Bach.Forge (HasForgeHandle (..), fetchPR)
 import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
-import Data.List (find)
+import Data.List (find, intercalate)
+import qualified Data.Text as T
 import RIO.Directory (getCurrentDirectory)
 import qualified RIO.Set as Set
 
 data MustIncludeNotFound = MustIncludeNotFound !PRIdentifier
     deriving stock (Show, Eq, Typeable)
 
-instance Exception MustIncludeNotFound
+instance Exception MustIncludeNotFound where
+    displayException (MustIncludeNotFound prid) =
+        "Must-include PR not found in targets: " <> case prid of
+            PRById n -> "#" <> show n
+            PRByBranch b -> T.unpack b
 
 data MustIncludeBaseConflict = MustIncludeBaseConflict ![PullRequest]
     deriving stock (Show, Eq, Typeable)
 
-instance Exception MustIncludeBaseConflict
+instance Exception MustIncludeBaseConflict where
+    displayException (MustIncludeBaseConflict prs) =
+        "Must-include PR(s) conflict with base: " <> showPRNums prs
 
 data MustIncludePairwiseConflict = MustIncludePairwiseConflict ![ConflictPair]
     deriving stock (Show, Eq, Typeable)
 
-instance Exception MustIncludePairwiseConflict
+instance Exception MustIncludePairwiseConflict where
+    displayException (MustIncludePairwiseConflict cps) =
+        "Must-include PRs conflict with each other: "
+            <> intercalate
+                ", "
+                (map (\cp -> "#" <> show cp.cpLeft <> " vs #" <> show cp.cpRight) cps)
 
 data MustIncludeHigherOrderConflict = MustIncludeHigherOrderConflict ![PullRequest]
     deriving stock (Show, Eq, Typeable)
 
-instance Exception MustIncludeHigherOrderConflict
+instance Exception MustIncludeHigherOrderConflict where
+    displayException (MustIncludeHigherOrderConflict prs) =
+        "Must-include PR(s) have higher-order conflicts: " <> showPRNums prs
+
+showPRNums :: [PullRequest] -> String
+showPRNums = intercalate ", " . map (\pr -> "#" <> show pr.prNumber)
 
 -- | Run the fugue algorithm: pairwise conflict detection + graph coloring
 -- + sequential validation. Returns the largest conflict-free batch (ready)

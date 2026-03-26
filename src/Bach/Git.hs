@@ -19,12 +19,16 @@ import System.Process.Typed (proc, readProcess, setWorkingDir)
 data GitCommandFailed = GitCommandFailed ![String]
     deriving stock (Show, Eq, Typeable)
 
-instance Exception GitCommandFailed
+instance Exception GitCommandFailed where
+    displayException (GitCommandFailed args) =
+        "git " <> unwords args <> " failed"
 
 data RemoteUrlUnparseable = RemoteUrlUnparseable !Text
     deriving stock (Show, Eq, Typeable)
 
-instance Exception RemoteUrlUnparseable
+instance Exception RemoteUrlUnparseable where
+    displayException (RemoteUrlUnparseable url) =
+        "Cannot parse remote URL: " <> T.unpack url
 
 -- | Run a git command in the given working directory.
 runGit :: (MonadIO m) => FilePath -> [String] -> m (ExitCode, Text, Text)

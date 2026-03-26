@@ -18,12 +18,16 @@ data GhCommandFailed = GhCommandFailed
     }
     deriving stock (Show, Eq, Typeable)
 
-instance Exception GhCommandFailed
+instance Exception GhCommandFailed where
+    displayException (GhCommandFailed args stderr) =
+        "gh " <> unwords args <> " failed: " <> T.unpack stderr
 
 data GhParseFailed = GhParseFailed !Text
     deriving stock (Show, Eq, Typeable)
 
-instance Exception GhParseFailed
+instance Exception GhParseFailed where
+    displayException (GhParseFailed err) =
+        "Failed to parse gh JSON output: " <> T.unpack err
 
 -- | Create a ForgeHandle that uses the @gh@ CLI to talk to GitHub.
 mkGitHubForgeHandle :: RepoContext -> ForgeHandle
