@@ -16,6 +16,7 @@ import Bach.Types
 import Data.List (find, intercalate)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.Text as T
+import Data.These (These (..))
 import RIO.Directory (getCurrentDirectory)
 import qualified RIO.Set as Set
 
@@ -103,7 +104,14 @@ runFugue opts = do
 
     -- Phase 1a: Partition by base conflicts
     logInfo "Checking for base conflicts..."
-    (baseConflicts, validPRs) <- partitionBase dir base prs
+    partitioned <- partitionBase dir base prs
+
+    let
+        baseConflicts = case partitioned of
+            This cs -> toList cs
+            These cs _ -> toList cs
+            That _ -> []
+
     unless (null baseConflicts)
         $ logWarn
         $ displayShow (length baseConflicts)
@@ -114,14 +122,41 @@ runFugue opts = do
         $ throwIO
         . MustIncludeBaseConflict
 
+    case partitioned of
+        This _ -> do
+            logInfo "No valid PRs to batch"
+            pure
+                FugueResults
+                    { frBaseConflicts = baseConflicts
+                    , frConflictPairs = []
+                    , frReady = []
+                    , frDeferred = []
+                    }
+        That validPRs -> runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs
+        These _ validPRs -> runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs
+
+-- | Run pairwise conflict detection, graph coloring, and sequential
+-- validation on the non-empty set of valid PRs.
+runBatching
+    :: (HasLogFunc env)
+    => Set.Set Int
+    -> (PullRequest -> Bool)
+    -> FilePath
+    -> Text
+    -> [PullRequest]
+    -> NonEmpty PullRequest
+    -> RIO env FugueResults
+runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs = do
     -- Phase 1b: Pairwise conflict detection
+    let
+        validList = toList validPRs
     logInfo
         $ "Testing "
         <> displayShow (length validPRs)
         <> " PRs for pairwise conflicts ("
         <> displayShow (nPairs (length validPRs))
         <> " pairs)..."
-    conflictPairs <- findConflicts dir base validPRs
+    conflictPairs <- findConflicts dir base validList
 
     -- Check must-include PRs don't conflict with each other
     let
@@ -136,64 +171,51 @@ runFugue opts = do
     let
         conflictSet =
             Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictPairs
+        batches = buildBatches validPRs conflictSet
 
-    case nonEmpty validPRs of
-        Nothing -> do
-            logInfo "No valid PRs to batch"
-            pure
-                FugueResults
-                    { frBaseConflicts = baseConflicts
-                    , frConflictPairs = conflictPairs
-                    , frReady = []
-                    , frDeferred = []
-                    }
-        Just validNE -> do
-            let
-                batches = buildBatches validNE conflictSet
+    -- Select candidate batch: largest containing all must-include PRs
+    (candidateBatch, deferred) <-
+        either throwIO pure $ selectBatch mustIncludeSet batches
 
-            -- Select candidate batch: largest containing all must-include PRs
-            (candidateBatch, deferred) <-
-                either throwIO pure $ selectBatch mustIncludeSet batches
+    let
+        candidateList = toList candidateBatch
 
-            let
-                candidateList = toList candidateBatch
+    logInfo
+        $ displayShow (length candidateBatch)
+        <> " PR(s) in candidate batch, "
+        <> displayShow (length deferred)
+        <> " deferred by pairwise conflicts"
 
-            logInfo
-                $ displayShow (length candidateBatch)
-                <> " PR(s) in candidate batch, "
-                <> displayShow (length deferred)
-                <> " deferred by pairwise conflicts"
+    -- Phase 2: Validate candidate batch by sequential merge-tree
+    -- Must-include PRs go first so they're never evicted by others
+    logInfo "Validating batch..."
+    let
+        mustFirst = filter isMustInclude candidateList
+        others = filter (not . isMustInclude) candidateList
+        orderedBatch = mustFirst <> others
+    (ready, evicted) <- validateBatch dir base orderedBatch
 
-            -- Phase 2: Validate candidate batch by sequential merge-tree
-            -- Must-include PRs go first so they're never evicted by others
-            logInfo "Validating batch..."
-            let
-                mustFirst = filter isMustInclude candidateList
-                others = filter (not . isMustInclude) candidateList
-                orderedBatch = mustFirst <> others
-            (ready, evicted) <- validateBatch dir base orderedBatch
+    -- Check must-include PRs weren't evicted
+    forM_ (nonEmpty $ filter isMustInclude evicted)
+        $ throwIO
+        . MustIncludeHigherOrderConflict
 
-            -- Check must-include PRs weren't evicted
-            forM_ (nonEmpty $ filter isMustInclude evicted)
-                $ throwIO
-                . MustIncludeHigherOrderConflict
+    unless (null evicted)
+        $ logWarn
+        $ displayShow (length evicted)
+        <> " PR(s) evicted during validation (higher-order conflicts)"
 
-            unless (null evicted)
-                $ logWarn
-                $ displayShow (length evicted)
-                <> " PR(s) evicted during validation (higher-order conflicts)"
+    logInfo
+        $ displayShow (length ready)
+        <> " PR(s) ready to merge"
 
-            logInfo
-                $ displayShow (length ready)
-                <> " PR(s) ready to merge"
-
-            pure
-                FugueResults
-                    { frBaseConflicts = baseConflicts
-                    , frConflictPairs = conflictPairs
-                    , frReady = ready
-                    , frDeferred = deferred <> evicted
-                    }
+    pure
+        FugueResults
+            { frBaseConflicts = baseConflicts
+            , frConflictPairs = conflictPairs
+            , frReady = ready
+            , frDeferred = deferred <> evicted
+            }
 
 -- | Resolve must-include identifiers against the fetched PR list.
 resolveMustInclude

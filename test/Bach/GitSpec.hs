@@ -4,6 +4,7 @@ import Bach.Conflicts (findConflicts, partitionBase)
 import Bach.Git (gitMergeTree)
 import Bach.Prelude
 import Bach.Types
+import Data.These (These (..))
 import RIO.FilePath ((</>))
 import Test.Hspec
 import TestHelpers
@@ -41,9 +42,10 @@ spec = do
             createBranch dir "clean" [("new-file.txt", "content\n")]
             let
                 pr = mkPR 1 "clean"
-            (bad, good) <- runRIO lf $ partitionBase dir "main" [pr]
-            bad `shouldBe` []
-            length good `shouldBe` 1
+            result <- runRIO lf $ partitionBase dir "main" (pr :| [])
+            case result of
+                That good -> length good `shouldBe` 1
+                other -> expectationFailure $ "Expected That, got: " <> show other
 
         it "classifies conflicting PRs as base conflicts" $ withTestRepo \dir -> withLog \lf -> do
             createBranch
@@ -57,9 +59,10 @@ spec = do
             git dir ["update-ref", "refs/remotes/origin/main", "refs/heads/main"]
             let
                 pr = mkPR 1 "old-branch"
-            (bad, good) <- runRIO lf $ partitionBase dir "main" [pr]
-            length bad `shouldBe` 1
-            good `shouldBe` []
+            result <- runRIO lf $ partitionBase dir "main" (pr :| [])
+            case result of
+                This bad -> length bad `shouldBe` 1
+                other -> expectationFailure $ "Expected This, got: " <> show other
 
     describe "findConflicts" do
         it "finds no conflicts between independent branches" $ withTestRepo \dir -> withLog \lf -> do

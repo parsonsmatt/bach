@@ -8,20 +8,25 @@ import Bach.Git (gitCommitTree, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
 import Data.List (tails, uncons)
+import Data.These (These (..))
 
--- | Partition PRs into (conflicts with base, clean).
+-- | Partition PRs into (conflicts with base, clean). Since the input is
+-- non-empty, at least one side of the result is guaranteed non-empty.
 partitionBase
-    :: (HasLogFunc env, Foldable f)
-    => FilePath -> Text -> f PullRequest -> RIO env ([PullRequest], [PullRequest])
+    :: (HasLogFunc env)
+    => FilePath
+    -> Text
+    -> NonEmpty PullRequest
+    -> RIO env (These (NonEmpty PullRequest) (NonEmpty PullRequest))
 partitionBase dir base prs = do
-    results <- forM (toList prs) $ \pr -> do
+    results <- forM prs $ \pr -> do
         result <- gitMergeTree dir ("origin/" <> base) ("origin/" <> pr.prHeadRef)
         case result of
             MergeConflict _ -> do
                 logWarn $ "  #" <> display pr.prNumber <> " conflicts with base"
                 pure $ Left pr
             MergeOk _ -> pure $ Right pr
-    pure $ partitionEithers results
+    pure $ partitionNE results
 
 -- | For each pair of PRs, test if they conflict when both merged into the base.
 -- Uses @git merge-tree@ (in-memory) and temporary commits to avoid touching
@@ -77,3 +82,18 @@ findConflicts dir base prs = do
 
 nPairs :: Int -> Int
 nPairs count = (count * (count - 1)) `div` 2
+
+-- | Partition a non-empty list of 'Either's. Total: the head seeds
+-- the accumulator, then the tail is folded in preserving order.
+partitionNE :: NonEmpty (Either a b) -> These (NonEmpty a) (NonEmpty b)
+partitionNE (x :| xs) = foldr cons (seed x) xs
+  where
+    seed (Left a) = This (a :| [])
+    seed (Right b) = That (b :| [])
+
+    cons (Left a) (This (ah :| as)) = This (a :| ah : as)
+    cons (Left a) (That bs) = These (a :| []) bs
+    cons (Left a) (These (ah :| as) bs) = These (a :| ah : as) bs
+    cons (Right b) (This as) = These as (b :| [])
+    cons (Right b) (That (bh :| bs)) = That (b :| bh : bs)
+    cons (Right b) (These as (bh :| bs)) = These as (b :| bh : bs)
