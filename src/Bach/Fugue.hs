@@ -99,19 +99,18 @@ runFugue opts = do
 
     let
         baseConflicts = case partitioned of
-            This cs -> toList cs
-            These cs _ -> toList cs
-            That _ -> []
+            This cs -> Just cs
+            These cs _ -> Just cs
+            That _ -> Nothing
+        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
 
-    unless (null baseConflicts)
-        $ logWarn
-        $ displayShow (length baseConflicts)
-        <> " PR(s) conflict with base and were excluded"
+    forM_ baseConflicts $ \cs ->
+        logWarn
+            $ displayShow (length cs)
+            <> " PR(s) conflict with base and were excluded"
 
     -- Check must-include PRs aren't base-conflicting
-    let
-        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
-    forM_ (nonEmpty $ filter isMustInclude baseConflicts)
+    forM_ (nonEmpty $ filter isMustInclude (maybe [] toList baseConflicts))
         $ throwIO
         . MustIncludeBaseConflict
 
@@ -121,7 +120,7 @@ runFugue opts = do
             pure
                 FugueResults
                     { frBaseConflicts = baseConflicts
-                    , frConflictPairs = []
+                    , frConflictPairs = Nothing
                     , frReady = []
                     , frDeferred = []
                     }
@@ -178,7 +177,7 @@ runBatching
     => Set.Set Int
     -> FilePath
     -> Text
-    -> [PullRequest]
+    -> Maybe (NonEmpty PullRequest)
     -> NonEmpty PullRequest
     -> RIO env FugueResults
 runBatching mustIncludeSet dir base baseConflicts validPRs = do
@@ -196,21 +195,21 @@ runBatching mustIncludeSet dir base baseConflicts validPRs = do
             ]
     mConflictPairs <- findConflicts dir base validPRs
     let
-        conflictPairs = maybe [] toList mConflictPairs
+        conflictList = maybe [] toList mConflictPairs
 
     -- Check must-include PRs don't conflict with each other
     let
         isMustIncludeConflict cp =
             Set.member cp.cpLeft mustIncludeSet
                 && Set.member cp.cpRight mustIncludeSet
-    forM_ (nonEmpty $ filter isMustIncludeConflict conflictPairs)
+    forM_ (nonEmpty $ filter isMustIncludeConflict conflictList)
         $ throwIO
         . MustIncludePairwiseConflict
 
     -- Graph coloring
     let
         conflictSet =
-            Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictPairs
+            Set.fromList $ map (\cp -> (cp.cpLeft, cp.cpRight)) conflictList
         batches = buildBatches validPRs conflictSet
 
     -- Select candidate batch: largest containing all must-include PRs
@@ -254,7 +253,7 @@ runBatching mustIncludeSet dir base baseConflicts validPRs = do
     pure
         FugueResults
             { frBaseConflicts = baseConflicts
-            , frConflictPairs = conflictPairs
+            , frConflictPairs = mConflictPairs
             , frReady = ready
             , frDeferred = deferred <> evicted
             }

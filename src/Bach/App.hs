@@ -191,9 +191,10 @@ applyResults results = do
         markDraft pr.prNumber
 
     -- Draft base conflicts
-    forM_ results.frBaseConflicts $ \pr -> do
-        logInfo $ "Drafting base-conflicting #" <> display pr.prNumber <> "..."
-        markDraft pr.prNumber
+    forM_ results.frBaseConflicts $ \baseConflicts ->
+        forM_ baseConflicts $ \pr -> do
+            logInfo $ "Drafting base-conflicting #" <> display pr.prNumber <> "..."
+            markDraft pr.prNumber
 
     -- Mark ready PRs as ready
     forM_ results.frReady $ \pr -> do
