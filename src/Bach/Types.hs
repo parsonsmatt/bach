@@ -5,7 +5,6 @@ module Bach.Types
     , MergeResult (..)
     , ConflictPair (..)
     , FugueResults (..)
-    , BachException (..)
     , FugueOptions (..)
     , OutputFormat (..)
     , parsePRIdentifier
@@ -132,15 +131,6 @@ instance FromJSON FugueResults where
 
 data OutputFormat = Human | JSON | GhActions
     deriving stock (Show, Eq)
-
-data BachException
-    = GitError !Text
-    | ForgeError !Text
-    | RepoDetectionError !Text
-    | MustIncludeError !Text
-    deriving stock (Show, Eq, Typeable)
-
-instance Exception BachException
 
 data FugueOptions = FugueOptions
     { fugueDryRun :: !Bool

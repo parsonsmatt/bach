@@ -4,6 +4,8 @@ module Bach.Git
     , gitMergeTree
     , gitCommitTree
     , parseConflictFiles
+    , GitCommandFailed (..)
+    , RemoteUrlUnparseable (..)
     ) where
 
 import Bach.Prelude
@@ -13,6 +15,16 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified RIO.ByteString.Lazy as LBS
 import System.Process.Typed (proc, readProcess, setWorkingDir)
+
+data GitCommandFailed = GitCommandFailed ![String]
+    deriving stock (Show, Eq, Typeable)
+
+instance Exception GitCommandFailed
+
+data RemoteUrlUnparseable = RemoteUrlUnparseable !Text
+    deriving stock (Show, Eq, Typeable)
+
+instance Exception RemoteUrlUnparseable
 
 -- | Run a git command in the given working directory.
 runGit :: (MonadIO m) => FilePath -> [String] -> m (ExitCode, Text, Text)
@@ -33,7 +45,7 @@ runGit_ dir args = do
     case exitCode of
         ExitSuccess -> pure out
         ExitFailure _ ->
-            throwIO . GitError $ "git " <> T.pack (unwords args) <> " failed"
+            throwIO $ GitCommandFailed args
 
 -- | Detect repository context from the current git working directory.
 detectRepoContext :: (MonadIO m) => FilePath -> m RepoContext
@@ -62,7 +74,7 @@ parseRemoteUrl url = do
                 reverse . take 2 . reverse $ T.splitOn "/" stripped
     case parts of
         [owner, repo] -> pure (owner, repo)
-        _ -> throwIO . RepoDetectionError $ "Cannot parse remote URL: " <> url
+        _ -> throwIO $ RemoteUrlUnparseable url
 
 -- | Detect the default branch from origin/HEAD.
 detectDefaultBranch :: (MonadIO m) => FilePath -> m Text

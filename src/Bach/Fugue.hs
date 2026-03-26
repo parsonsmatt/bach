@@ -1,6 +1,10 @@
 module Bach.Fugue
     ( runFugue
     , validateBatch
+    , MustIncludeNotFound (..)
+    , MustIncludeBaseConflict (..)
+    , MustIncludePairwiseConflict (..)
+    , MustIncludeHigherOrderConflict (..)
     ) where
 
 import Bach.Batching (buildBatches, selectBatch)
@@ -10,9 +14,28 @@ import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
 import Bach.Prelude
 import Bach.Types
 import Data.List (find)
-import qualified Data.Text as T
 import RIO.Directory (getCurrentDirectory)
 import qualified RIO.Set as Set
+
+data MustIncludeNotFound = MustIncludeNotFound !PRIdentifier
+    deriving stock (Show, Eq, Typeable)
+
+instance Exception MustIncludeNotFound
+
+data MustIncludeBaseConflict = MustIncludeBaseConflict ![PullRequest]
+    deriving stock (Show, Eq, Typeable)
+
+instance Exception MustIncludeBaseConflict
+
+data MustIncludePairwiseConflict = MustIncludePairwiseConflict ![ConflictPair]
+    deriving stock (Show, Eq, Typeable)
+
+instance Exception MustIncludePairwiseConflict
+
+data MustIncludeHigherOrderConflict = MustIncludeHigherOrderConflict ![PullRequest]
+    deriving stock (Show, Eq, Typeable)
+
+instance Exception MustIncludeHigherOrderConflict
 
 -- | Run the fugue algorithm: pairwise conflict detection + graph coloring
 -- + sequential validation. Returns the largest conflict-free batch (ready)
@@ -68,9 +91,7 @@ runFugue opts = do
         mustIncludeBaseConflicts = filter isMustInclude baseConflicts
     unless (null mustIncludeBaseConflicts)
         $ throwIO
-        $ MustIncludeError
-        $ "Must-include PR(s) conflict with base: "
-        <> formatPRNums mustIncludeBaseConflicts
+        $ MustIncludeBaseConflict mustIncludeBaseConflicts
 
     -- Phase 1b: Pairwise conflict detection
     logInfo
@@ -92,14 +113,7 @@ runFugue opts = do
                 conflictPairs
     unless (null mustIncludeConflicts)
         $ throwIO
-        $ MustIncludeError
-        $ "Must-include PRs conflict with each other: "
-        <> T.intercalate
-            ", "
-            ( map
-                (\cp -> mconcat ["#", tshow cp.cpLeft, " vs #", tshow cp.cpRight])
-                mustIncludeConflicts
-            )
+        $ MustIncludePairwiseConflict mustIncludeConflicts
 
     -- Graph coloring
     let
@@ -131,9 +145,7 @@ runFugue opts = do
         mustIncludeEvicted = filter isMustInclude evicted
     unless (null mustIncludeEvicted)
         $ throwIO
-        $ MustIncludeError
-        $ "Must-include PR(s) have higher-order conflicts: "
-        <> formatPRNums mustIncludeEvicted
+        $ MustIncludeHigherOrderConflict mustIncludeEvicted
 
     unless (null evicted)
         $ logWarn
@@ -154,33 +166,18 @@ runFugue opts = do
 
 -- | Resolve must-include identifiers against the fetched PR list.
 resolveMustInclude
-    :: [PullRequest] -> [PRIdentifier] -> Either BachException (Set.Set Int)
+    :: [PullRequest] -> [PRIdentifier] -> Either MustIncludeNotFound (Set.Set Int)
 resolveMustInclude _ [] = Right Set.empty
 resolveMustInclude prs ids = Set.fromList <$> mapM resolve ids
   where
     resolve (PRById prNum) =
         case find (\pr -> pr.prNumber == prNum) prs of
             Just _ -> Right prNum
-            Nothing ->
-                Left
-                    $ MustIncludeError
-                    $ "Must-include PR #"
-                    <> tshow prNum
-                    <> " not found in targets"
+            Nothing -> Left $ MustIncludeNotFound (PRById prNum)
     resolve (PRByBranch branch) =
         case find (\pr -> pr.prHeadRef == branch) prs of
             Just pr -> Right pr.prNumber
-            Nothing ->
-                Left
-                    $ MustIncludeError
-                    $ "Must-include branch '"
-                    <> branch
-                    <> "' not found in targets"
-
--- | Format a list of PRs as "#1, #2, #3".
-formatPRNums :: [PullRequest] -> Text
-formatPRNums =
-    T.intercalate ", " . map (\pr -> "#" <> tshow pr.prNumber)
+            Nothing -> Left $ MustIncludeNotFound (PRByBranch branch)
 
 -- | Validate a batch by sequentially merging each PR into an accumulated
 -- tree via merge-tree. Returns (clean PRs, evicted PRs).

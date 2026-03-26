@@ -1,6 +1,7 @@
 module Bach.Batching
     ( buildBatches
     , selectBatch
+    , NoBatchEligible (..)
     ) where
 
 import Bach.Prelude
@@ -8,6 +9,11 @@ import Bach.Types
 import RIO.List (headMaybe, sortOn)
 import qualified RIO.Map as Map
 import qualified RIO.Set as Set
+
+data NoBatchEligible = NoBatchEligible !(Set.Set Int)
+    deriving stock (Show, Eq, Typeable)
+
+instance Exception NoBatchEligible
 
 -- | Greedy graph coloring: assign each PR to the lowest batch number
 -- not used by any conflicting neighbor.
@@ -51,7 +57,7 @@ firstAvailableBatch used =
 selectBatch
     :: Set.Set Int
     -> Map.Map Int [PullRequest]
-    -> Either BachException ([PullRequest], [PullRequest])
+    -> Either NoBatchEligible ([PullRequest], [PullRequest])
 selectBatch mustInclude batches
     | Map.null batches = Right ([], [])
     | otherwise =
@@ -64,8 +70,7 @@ selectBatch mustInclude batches
          in
             case sorted of
                 [] ->
-                    Left
-                        $ MustIncludeError "No batch contains all must-include PRs"
+                    Left $ NoBatchEligible mustInclude
                 ((chosenKey, chosen) : _) ->
                     let
                         deferred =

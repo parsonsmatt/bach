@@ -1,9 +1,8 @@
 module Bach.BatchingSpec (spec) where
 
-import Bach.Batching (buildBatches, selectBatch)
+import Bach.Batching (NoBatchEligible (..), buildBatches, selectBatch)
 import Bach.Conflicts (nPairs)
 import Bach.Prelude
-import Bach.Types
 import qualified RIO.Map as Map
 import qualified RIO.Set as Set
 import Test.Hspec
@@ -106,7 +105,7 @@ spec = do
                 conflicts = Set.singleton (1, 2)
                 batches = buildBatches [prA, prB] conflicts
             selectBatch (Set.fromList [1, 2]) batches
-                `shouldBe` Left (MustIncludeError "No batch contains all must-include PRs")
+                `shouldBe` Left (NoBatchEligible (Set.fromList [1, 2]))
 
         it "returns empty for empty batches" do
             selectBatch Set.empty Map.empty
