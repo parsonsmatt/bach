@@ -10,10 +10,11 @@ module Bach.Git
 
 import Bach.Prelude
 import Bach.Types
-import Data.List (splitAt)
+import Data.List.Split (chunksOf)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified RIO.ByteString.Lazy as LBS
+import Safe (lastDef)
 import System.Process.Typed (proc, readProcess, setWorkingDir)
 
 data GitCommandFailed = GitCommandFailed ![String]
@@ -90,11 +91,6 @@ detectDefaultBranch dir = do
         ExitFailure _ ->
             pure "main"
 
-lastDef :: a -> [a] -> a
-lastDef def [] = def
-lastDef _ [x] = x
-lastDef def (_ : xs) = lastDef def xs
-
 -- | Fetch specific refspecs from origin, in chunks of 20.
 gitFetch
     :: (MonadIO m, MonadReader env m, HasLogFunc env) => FilePath -> [Text] -> m ()
@@ -152,11 +148,3 @@ parseConflictFiles output = mapMaybe extractFile (T.lines output)
         (_, rest)
             | not (T.null rest) -> Just $ T.strip $ T.drop (T.length marker) rest
         _ -> Nothing
-
-chunksOf :: Int -> [a] -> [[a]]
-chunksOf _ [] = []
-chunksOf size xs =
-    let
-        (hd, tl) = splitAt size xs
-     in
-        hd : chunksOf size tl

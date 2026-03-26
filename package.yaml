@@ -17,6 +17,8 @@ dependencies:
 - rio
 - aeson
 - optparse-applicative
+- safe
+- split
 - these
 - typed-process
 - text
