@@ -17,14 +17,14 @@ import qualified RIO.ByteString.Lazy as LBS
 import System.Process.Typed (proc, readProcess, setWorkingDir)
 
 data GitCommandFailed = GitCommandFailed ![String]
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception GitCommandFailed where
     displayException (GitCommandFailed args) =
         "git " <> unwords args <> " failed"
 
 data RemoteUrlUnparseable = RemoteUrlUnparseable !Text
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception RemoteUrlUnparseable where
     displayException (RemoteUrlUnparseable url) =

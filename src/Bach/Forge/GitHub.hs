@@ -16,14 +16,14 @@ data GhCommandFailed = GhCommandFailed
     { gcfArgs :: ![String]
     , gcfStderr :: !Text
     }
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception GhCommandFailed where
-    displayException (GhCommandFailed args stderr) =
-        "gh " <> unwords args <> " failed: " <> T.unpack stderr
+    displayException (GhCommandFailed args err) =
+        "gh " <> unwords args <> " failed: " <> T.unpack err
 
 data GhParseFailed = GhParseFailed !Text
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception GhParseFailed where
     displayException (GhParseFailed err) =

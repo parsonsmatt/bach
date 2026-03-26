@@ -12,7 +12,7 @@ import qualified RIO.Map as Map
 import qualified RIO.Set as Set
 
 data NoBatchEligible = NoBatchEligible !(Set.Set Int)
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception NoBatchEligible where
     displayException (NoBatchEligible required) =

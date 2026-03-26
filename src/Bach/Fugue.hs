@@ -19,7 +19,7 @@ import RIO.Directory (getCurrentDirectory)
 import qualified RIO.Set as Set
 
 data MustIncludeNotFound = MustIncludeNotFound !PRIdentifier
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception MustIncludeNotFound where
     displayException (MustIncludeNotFound prid) =
@@ -28,14 +28,14 @@ instance Exception MustIncludeNotFound where
             PRByBranch b -> T.unpack b
 
 data MustIncludeBaseConflict = MustIncludeBaseConflict ![PullRequest]
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception MustIncludeBaseConflict where
     displayException (MustIncludeBaseConflict prs) =
         "Must-include PR(s) conflict with base: " <> showPRNums prs
 
 data MustIncludePairwiseConflict = MustIncludePairwiseConflict ![ConflictPair]
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception MustIncludePairwiseConflict where
     displayException (MustIncludePairwiseConflict cps) =
@@ -45,7 +45,7 @@ instance Exception MustIncludePairwiseConflict where
                 (map (\cp -> "#" <> show cp.cpLeft <> " vs #" <> show cp.cpRight) cps)
 
 data MustIncludeHigherOrderConflict = MustIncludeHigherOrderConflict ![PullRequest]
-    deriving stock (Show, Eq, Typeable)
+    deriving stock (Show, Eq)
 
 instance Exception MustIncludeHigherOrderConflict where
     displayException (MustIncludeHigherOrderConflict prs) =
