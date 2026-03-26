@@ -35,6 +35,8 @@ library
       Bach.NonEmptyMap
       Bach.Output
       Bach.Prelude
+      Bach.PRMap
+      Bach.These
       Bach.Types
   other-modules:
       Paths_bach

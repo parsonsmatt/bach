@@ -10,13 +10,14 @@ import Bach.Batching (buildBatches, selectBatch)
 import Bach.Conflicts (findConflicts, nPairs, partitionBase)
 import Bach.Forge (HasForgeHandle (..), fetchPR)
 import Bach.Git (detectRepoContext, gitCommitTree, gitFetch, gitMergeTree)
+import Bach.PRMap (PRMap)
+import qualified Bach.PRMap as PRMap
 import Bach.Prelude
 import Bach.Types
 import Data.List (intercalate)
 import Data.List.NonEmpty (nonEmpty)
 import Data.These (These (..))
 import RIO.Directory (getCurrentDirectory)
-import qualified RIO.Map as Map
 import qualified RIO.Set as Set
 
 data MustIncludeBaseConflict = MustIncludeBaseConflict !(NonEmpty PullRequest)
@@ -36,7 +37,7 @@ instance Exception MustIncludePairwiseConflict where
             <> intercalate
                 ", "
                 ( map
-                    (\cp -> "#" <> show cp.cpLeft <> " vs #" <> show cp.cpRight)
+                    (\cp -> mconcat ["#", show cp.cpLeft, " vs #", show cp.cpRight])
                     (toList cps)
                 )
 
@@ -65,24 +66,22 @@ runFugue opts = do
         dir = repoLocalPath ctx
 
     logInfo
-        $ "Detected repo: "
-        <> display (repoOwner ctx)
-        <> "/"
-        <> display (repoName ctx)
+        $ mconcat
+            [ "Detected repo: "
+            , display (repoOwner ctx)
+            , "/"
+            , display (repoName ctx)
+            ]
     logInfo $ "Base branch: " <> display base
 
     -- Fetch all PR metadata, deduplicating by PR number
     logInfo "Fetching PR metadata..."
-    prMap <- foldM fetchInto Map.empty (toList (fugueTargets opts))
-    (prMap', mustIncludeSet) <-
-        foldM fetchMustIncludeInto (prMap, Set.empty) (fugueMustInclude opts)
+    (prMap, mustIncludeSet) <- fetchAllPRs opts
 
-    -- targets are NonEmpty, so prMap' is non-empty
-    let
-        prs = case nonEmpty (Map.elems prMap') of
-            Just ne -> ne
-            Nothing -> error "runFugue: impossible — targets is NonEmpty"
-        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
+    -- PRMap built from NonEmpty targets is always non-empty
+    prs <- case nonEmpty (PRMap.elems prMap) of
+        Just ne -> pure ne
+        Nothing -> error "runFugue: impossible — targets is NonEmpty"
 
     unless (Set.null mustIncludeSet)
         $ logInfo
@@ -110,6 +109,8 @@ runFugue opts = do
         <> " PR(s) conflict with base and were excluded"
 
     -- Check must-include PRs aren't base-conflicting
+    let
+        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
     forM_ (nonEmpty $ filter isMustInclude baseConflicts)
         $ throwIO
         . MustIncludeBaseConflict
@@ -124,28 +125,75 @@ runFugue opts = do
                     , frReady = []
                     , frDeferred = []
                     }
-        That validPRs -> runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs
-        These _ validPRs -> runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs
+        That validPRs -> runBatching mustIncludeSet dir base baseConflicts validPRs
+        These _ validPRs -> runBatching mustIncludeSet dir base baseConflicts validPRs
+
+-- | Fetch target and must-include PRs, returning a deduplicated map
+-- and the set of must-include PR numbers.
+fetchAllPRs
+    :: (HasForgeHandle env, HasLogFunc env)
+    => FugueOptions
+    -> RIO env (PRMap, Set.Set Int)
+fetchAllPRs opts = do
+    prMap <-
+        foldM
+            (\m prid -> fst <$> fetchPRInto Nothing m prid)
+            PRMap.empty
+            (toList (fugueTargets opts))
+    foldM
+        ( \(m, s) prid -> do
+            (m', prNum) <- fetchPRInto (Just "(must-include)") m prid
+            pure (m', Set.insert prNum s)
+        )
+        (prMap, Set.empty)
+        (fugueMustInclude opts)
+
+-- | Fetch a PR and insert into the map. Logs with an optional suffix
+-- if the PR is new. Returns the updated map and the PR number.
+fetchPRInto
+    :: (HasForgeHandle env, HasLogFunc env)
+    => Maybe Utf8Builder
+    -> PRMap
+    -> PRIdentifier
+    -> RIO env (PRMap, Int)
+fetchPRInto mSuffix prMap prid = do
+    pr <- fetchPR prid
+    let
+        (isNew, prMap') = PRMap.insert pr prMap
+    when isNew
+        $ logInfo
+        $ mconcat
+            [ "  #"
+            , display pr.prNumber
+            , " "
+            , display pr.prTitle
+            , foldMap (" " <>) mSuffix
+            ]
+    pure (prMap', pr.prNumber)
 
 -- | Run pairwise conflict detection, graph coloring, and sequential
 -- validation on the non-empty set of valid PRs.
 runBatching
     :: (HasLogFunc env)
     => Set.Set Int
-    -> (PullRequest -> Bool)
     -> FilePath
     -> Text
     -> [PullRequest]
     -> NonEmpty PullRequest
     -> RIO env FugueResults
-runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs = do
+runBatching mustIncludeSet dir base baseConflicts validPRs = do
+    let
+        isMustInclude pr = Set.member pr.prNumber mustIncludeSet
+
     -- Phase 1b: Pairwise conflict detection
     logInfo
-        $ "Testing "
-        <> displayShow (length validPRs)
-        <> " PRs for pairwise conflicts ("
-        <> displayShow (nPairs (length validPRs))
-        <> " pairs)..."
+        $ mconcat
+            [ "Testing "
+            , displayShow (length validPRs)
+            , " PRs for pairwise conflicts ("
+            , displayShow (nPairs (length validPRs))
+            , " pairs)..."
+            ]
     mConflictPairs <- findConflicts dir base validPRs
     let
         conflictPairs = maybe [] toList mConflictPairs
@@ -173,10 +221,12 @@ runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs = do
         candidateList = toList candidateBatch
 
     logInfo
-        $ displayShow (length candidateBatch)
-        <> " PR(s) in candidate batch, "
-        <> displayShow (length deferred)
-        <> " deferred by pairwise conflicts"
+        $ mconcat
+            [ displayShow (length candidateBatch)
+            , " PR(s) in candidate batch, "
+            , displayShow (length deferred)
+            , " deferred by pairwise conflicts"
+            ]
 
     -- Phase 2: Validate candidate batch by sequential merge-tree
     -- Must-include PRs go first so they're never evicted by others
@@ -209,44 +259,6 @@ runBatching mustIncludeSet isMustInclude dir base baseConflicts validPRs = do
             , frDeferred = deferred <> evicted
             }
 
--- | Fetch a PR and insert into the map, skipping duplicates.
-fetchInto
-    :: (HasForgeHandle env, HasLogFunc env)
-    => Map.Map Int PullRequest
-    -> PRIdentifier
-    -> RIO env (Map.Map Int PullRequest)
-fetchInto prMap prid = do
-    pr <- fetchPR prid
-    unless (Map.member pr.prNumber prMap)
-        $ logInfo
-        $ "  #"
-        <> display pr.prNumber
-        <> " "
-        <> display pr.prTitle
-    pure $ Map.insertWith (\_ old -> old) pr.prNumber pr prMap
-
--- | Fetch a must-include PR, insert into map, and track its number.
-fetchMustIncludeInto
-    :: (HasForgeHandle env, HasLogFunc env)
-    => (Map.Map Int PullRequest, Set.Set Int)
-    -> PRIdentifier
-    -> RIO env (Map.Map Int PullRequest, Set.Set Int)
-fetchMustIncludeInto (prMap, mustSet) prid = do
-    pr <- fetchPR prid
-    let
-        isNew = not $ Map.member pr.prNumber prMap
-    when isNew
-        $ logInfo
-        $ "  #"
-        <> display pr.prNumber
-        <> " "
-        <> display pr.prTitle
-        <> " (must-include)"
-    pure
-        ( Map.insertWith (\_ old -> old) pr.prNumber pr prMap
-        , Set.insert pr.prNumber mustSet
-        )
-
 -- | Validate a batch by sequentially merging each PR into an accumulated
 -- tree via merge-tree. Returns (clean PRs, evicted PRs).
 validateBatch
@@ -267,5 +279,6 @@ validateBatch dir base prs = go prs ("origin/" <> base) [] []
                     Just commit -> go rest commit (pr : clean) evicted
                     Nothing -> go rest accumulated clean (pr : evicted)
             MergeConflict _ -> do
-                logInfo $ "    #" <> display pr.prNumber <> " evicted (higher-order conflict)"
+                logInfo
+                    $ mconcat ["    #", display pr.prNumber, " evicted (higher-order conflict)"]
                 go rest accumulated clean (pr : evicted)

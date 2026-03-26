@@ -20,7 +20,7 @@ data GhCommandFailed = GhCommandFailed
 
 instance Exception GhCommandFailed where
     displayException (GhCommandFailed args err) =
-        "gh " <> unwords args <> " failed: " <> T.unpack err
+        mconcat ["gh ", unwords args, " failed: ", T.unpack err]
 
 data GhParseFailed = GhParseFailed !Text
     deriving stock (Show, Eq)

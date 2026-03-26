@@ -22,7 +22,7 @@ data GitCommandFailed = GitCommandFailed ![String]
 
 instance Exception GitCommandFailed where
     displayException (GitCommandFailed args) =
-        "git " <> unwords args <> " failed"
+        mconcat ["git ", unwords args, " failed"]
 
 data RemoteUrlUnparseable = RemoteUrlUnparseable !Text
     deriving stock (Show, Eq)
