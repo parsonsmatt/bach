@@ -16,7 +16,7 @@ import Bach.Prelude
 import Bach.Types
 import Data.List (intercalate)
 import Data.List.NonEmpty (nonEmpty)
-import Data.These (These (..))
+import Data.These.Combinators (justHere, justThere)
 import RIO.Directory (getCurrentDirectory)
 import qualified RIO.Set as Set
 
@@ -98,10 +98,7 @@ runFugue opts = do
     partitioned <- partitionBase dir base prs
 
     let
-        baseConflicts = case partitioned of
-            This cs -> Just cs
-            These cs _ -> Just cs
-            That _ -> Nothing
+        baseConflicts = justHere partitioned
         isMustInclude pr = Set.member pr.prNumber mustIncludeSet
 
     forM_ baseConflicts $ \cs ->
@@ -114,8 +111,8 @@ runFugue opts = do
         $ throwIO
         . MustIncludeBaseConflict
 
-    case partitioned of
-        This _ -> do
+    case justThere partitioned of
+        Nothing -> do
             logInfo "No valid PRs to batch"
             pure
                 FugueResults
@@ -124,8 +121,8 @@ runFugue opts = do
                     , frReady = []
                     , frDeferred = []
                     }
-        That validPRs -> runBatching mustIncludeSet dir base baseConflicts validPRs
-        These _ validPRs -> runBatching mustIncludeSet dir base baseConflicts validPRs
+        Just validPRs ->
+            runBatching mustIncludeSet dir base baseConflicts validPRs
 
 -- | Fetch target and must-include PRs, returning a deduplicated map
 -- and the set of must-include PR numbers.
